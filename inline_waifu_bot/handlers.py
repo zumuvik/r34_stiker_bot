@@ -177,10 +177,10 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
 
     try:
         await _edit_message(callback, media_obj, build_markup(tag, creator_id))
-    except TelegramBadRequest:
+    except TelegramBadRequest as exc:
         logger.warning(
-            "Media (type=%s) failed edit, falling back to cat photo",
-            media_type,
+            "Verify media (type=%s) failed edit: %s. Falling back to cat photo.",
+            media_type, exc,
         )
         fallback = InputMediaPhoto(
             media=config.FALLBACK_IMAGE_URL,
@@ -259,10 +259,10 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     try:
         await _edit_message(callback, media_obj, build_markup(tag, creator_id))
         await callback.answer()
-    except TelegramBadRequest:
+    except TelegramBadRequest as exc:
         logger.warning(
-            "Media (type=%s) failed edit, falling back to cat photo",
-            media_type,
+            "More media (type=%s) failed edit: %s. Falling back to cat photo.",
+            media_type, exc,
         )
         fallback = InputMediaPhoto(
             media=config.FALLBACK_IMAGE_URL,
