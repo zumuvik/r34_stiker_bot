@@ -7,6 +7,7 @@ SQLite database for user stats and leaderboard.
 
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).resolve().parent.parent / "bot_stats.db"
 
 _conn: sqlite3.Connection | None = None
+_write_lock = threading.Lock()
 
 
 def get_connection() -> sqlite3.Connection:
@@ -23,7 +25,7 @@ def get_connection() -> sqlite3.Connection:
     if _conn is None:
         _conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
         _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL;")
+        _conn.execute("PRAGMA journal_mode=WAL;").fetchone()
     return _conn
 
 
@@ -53,38 +55,41 @@ def update_user_sperm(user_id: int, username: str, delta: int) -> int:
     """
     Добавляет (или вычитает) ``delta`` к ``total_sperm`` пользователя.
 
-    Пол в нуле — уйти в минус нельзя. Если ``delta`` отрицательная
-    и у пользователя недостаточно спермы, дельта обрезается до нуля.
+    Пол в нуле — уйти в минус нельзя (``MAX(0, total_sperm + delta)``).
 
     Returns:
         Фактический дельта, который был применён (может отличаться
         от запрошенного, если сработал пол).
     """
-    conn = get_connection()
+    with _write_lock:
+        conn = get_connection()
 
-    # Текущий баланс (0, если записи нет)
-    row = conn.execute(
-        "SELECT total_sperm FROM user_stats WHERE user_id = ?",
-        (user_id,),
-    ).fetchone()
-    current = row["total_sperm"] if row else 0
+        # Текущий баланс до изменения
+        row = conn.execute(
+            "SELECT total_sperm FROM user_stats WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        old = row["total_sperm"] if row else 0
 
-    # Обрезаем отрицательную дельту, чтобы не уйти ниже нуля
-    if delta < 0 and current + delta < 0:
-        delta = -current  # ровно в ноль
+        # UPSERT с полом в нуле
+        conn.execute(
+            """
+            INSERT INTO user_stats (user_id, username, total_sperm)
+            VALUES (?, ?, MAX(0, ?))
+            ON CONFLICT(user_id) DO UPDATE SET
+                username     = excluded.username,
+                total_sperm  = MAX(0, total_sperm + ?)
+            """,
+            (user_id, username, delta, delta),
+        )
+        conn.commit()
 
-    conn.execute(
-        """
-        INSERT INTO user_stats (user_id, username, total_sperm)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            username     = excluded.username,
-            total_sperm  = total_sperm + excluded.total_sperm
-        """,
-        (user_id, username, delta),
-    )
-    conn.commit()
-    return delta
+        # Реальный дельта (для отображения)
+        new = conn.execute(
+            "SELECT total_sperm FROM user_stats WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()["total_sperm"]
+        return new - old
 
 
 def get_leaderboard(limit: int = 10) -> list[dict]:
