@@ -19,6 +19,7 @@ Inline NSFW Telegram Bot (18+)
 
 import os
 import sys
+import time
 import logging
 import asyncio
 import secrets
@@ -56,6 +57,9 @@ FALLBACK_IMAGE_URL: str = "https://placehold.co/512x512/1a1a2e/ffffff?text=NSFW+
 API_TIMEOUT_SECONDS: int = 5
 """Таймаут HTTP-запроса к Waifu.im API (в секундах)."""
 
+BUTTON_COOLDOWN: int = 3
+"""КД между нажатиями кнопки «Давай ещё!» для одного пользователя (в секундах)."""
+
 # Допустимые теги, которые принимает бот.
 # Актуальный список: https://waifu.im/docs
 VALID_TAGS: frozenset[str] = frozenset({
@@ -80,6 +84,9 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
+
+# Хранилище времени последнего нажатия кнопки для каждого пользователя.
+_cooldowns: dict[int, float] = {}
 
 # ─────────────────── Работа с Waifu.im API ───────────────────
 
@@ -151,24 +158,27 @@ async def fetch_nsfw_image(tag: str | None = None) -> str:
 # ─────────────────── Вспомогательные функции ───────────────────
 
 
-def build_markup(tag: str | None) -> InlineKeyboardMarkup:
+def build_markup(tag: str | None, owner_id: int) -> InlineKeyboardMarkup:
     """
     Создаёт инлайн-клавиатуру с кнопкой «🔥 Давай ещё!».
 
-    В ``callback_data`` кодируется текущий тег, чтобы при повторном
-    нажатии запрашивать контент той же категории.
+    В ``callback_data`` кодируется тег и ID владельца сообщения,
+    чтобы при нажатии можно было проверить, что кнопку жмёт тот же
+    пользователь.
 
     Формат callback_data:
-        - ``more_random`` — если тег не указан
-        - ``more_{tag}`` — если тег указан (например ``more_maid``)
+        - ``more_random_{owner_id}`` — если тег не указан
+        - ``more_{tag}_{owner_id}`` — если тег указан
 
     Args:
         tag: Текущий тег или ``None``.
+        owner_id: Telegram ID пользователя, отправившего сообщение.
 
     Returns:
         Готовая ``InlineKeyboardMarkup`` с одной кнопкой.
     """
-    data = f"more_{tag}" if tag else "more_random"
+    tag_part = f"more_{tag}" if tag else "more_random"
+    data = f"{tag_part}_{owner_id}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -213,7 +223,8 @@ async def handle_inline_query(query: InlineQuery) -> None:
     чтобы каждый новый запрос выдавал свежую картинку.
     """
     tag = validate_tag(query.query)
-    logger.info("Inline-запрос от %s: тег='%s'", query.from_user.id, tag)
+    owner_id = query.from_user.id
+    logger.info("Inline-запрос от %s: тег='%s'", owner_id, tag)
 
     image_url = await fetch_nsfw_image(tag)
 
@@ -223,7 +234,7 @@ async def handle_inline_query(query: InlineQuery) -> None:
         id=secrets.token_hex(8),
         photo_url=image_url,
         thumbnail_url=image_url,
-        reply_markup=build_markup(tag),
+        reply_markup=build_markup(tag, owner_id),
         caption=(
             f"<b>NSFW Anime</b>\n"
             f"Тег: {tag or 'random'}"
@@ -246,18 +257,53 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     """
     Обрабатывает нажатие на кнопку «🔥 Давай ещё!».
 
-    1. Извлекает тег из ``callback.data`` (формат: ``more_{tag}``).
-    2. Запрашивает новое изображение у Waifu.im API.
-    3. Редактирует медиа-контент в том же сообщении.
-    4. Сохраняет ту же клавиатуру (с актуальным тегом).
+    1. Извлекает тег и ID владельца из ``callback.data``.
+    2. Проверяет, что кнопку нажал владелец сообщения.
+    3. Проверяет кд (3 секунды между нажатиями).
+    4. Запрашивает новое изображение у Waifu.im API.
+    5. Редактирует медиа-контент в том же сообщении.
     """
-    # Разбор callback_data
-    tag_raw = callback.data.removeprefix("more_")
-    tag: str | None = tag_raw if tag_raw != "random" else None
+    # Разбор callback_data: more_{tag}_{owner_id}
+    payload = callback.data.removeprefix("more_")
+    # payload = "maid_123456" или "random_123456" или "marin-kitagawa_123456"
+    try:
+        *tag_parts, owner_id_str = payload.rsplit("_", 1)
+        owner_id = int(owner_id_str)
+        tag_str = "_".join(tag_parts)
+    except (ValueError, IndexError):
+        logger.warning("Невалидный callback_data: %s", callback.data)
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+
+    tag: str | None = tag_str if tag_str != "random" else None
+
+    # ── Проверка владельца ────────────────────────────────
+    clicker_id = callback.from_user.id
+    if clicker_id != owner_id:
+        logger.info("Чужой нажал кнопку: %s (владелец %s)", clicker_id, owner_id)
+        await callback.answer(
+            "❌ Это могут нажимать только тот, кто отправил картинку.",
+            show_alert=True,
+        )
+        return
+
+    # ── Проверка кд ──────────────────────────────────────
+    now = time.time()
+    last = _cooldowns.get(clicker_id, 0.0)
+    if now - last < BUTTON_COOLDOWN:
+        remaining = int(BUTTON_COOLDOWN - (now - last))
+        logger.info("Кд у %s: осталось %dс", clicker_id, remaining)
+        await callback.answer(
+            f"⏳ Подожди {remaining} с перед следующим нажатием.",
+            show_alert=True,
+        )
+        return
+
+    _cooldowns[clicker_id] = now
 
     logger.info(
         "Callback от %s: новый контент, тег='%s'",
-        callback.from_user.id,
+        clicker_id,
         tag,
     )
 
@@ -278,12 +324,12 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
             await bot.edit_message_media(
                 inline_message_id=callback.inline_message_id,
                 media=media,
-                reply_markup=build_markup(tag),
+                reply_markup=build_markup(tag, owner_id),
             )
         else:
             await callback.message.edit_media(
                 media=media,
-                reply_markup=build_markup(tag),
+                reply_markup=build_markup(tag, owner_id),
             )
         await callback.answer()  # Закрываем состояние загрузки на кнопке
     except Exception as exc:

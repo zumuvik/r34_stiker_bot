@@ -12,6 +12,7 @@ import os
 os.environ["BOT_TOKEN"] = "123456:test_fake_token_abc"
 
 import asyncio
+import time
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -99,25 +100,25 @@ class TestValidateTag:
 
 class TestBuildMarkup:
     def test_with_tag(self):
-        markup = bot.build_markup("maid")
+        markup = bot.build_markup("maid", owner_id=12345)
         assert isinstance(markup, InlineKeyboardMarkup)
         btn = markup.inline_keyboard[0][0]
         assert btn.text == "🔥 Давай ещё!"
-        assert btn.callback_data == "more_maid"
+        assert btn.callback_data == "more_maid_12345"
 
     def test_without_tag(self):
-        markup = bot.build_markup(None)
+        markup = bot.build_markup(None, owner_id=999)
         btn = markup.inline_keyboard[0][0]
-        assert btn.callback_data == "more_random"
+        assert btn.callback_data == "more_random_999"
 
     def test_several_tags(self):
         for tag in ("ero", "hentai", "waifu"):
-            btn = bot.build_markup(tag).inline_keyboard[0][0]
-            assert btn.callback_data == f"more_{tag}"
+            btn = bot.build_markup(tag, owner_id=42).inline_keyboard[0][0]
+            assert btn.callback_data == f"more_{tag}_42"
 
     def test_returns_new_markup_each_call(self):
-        m1 = bot.build_markup("maid")
-        m2 = bot.build_markup("maid")
+        m1 = bot.build_markup("maid", owner_id=1)
+        m2 = bot.build_markup("maid", owner_id=1)
         assert m1 is not m2
 
 
@@ -337,7 +338,7 @@ class TestHandleInlineQuery:
         markup = result.reply_markup
         assert markup is not None
         btn = markup.inline_keyboard[0][0]
-        assert btn.callback_data == "more_hentai"
+        assert btn.callback_data == "more_hentai_12345"
 
     @pytest.mark.asyncio
     async def test_result_has_reply_markup_random(self):
@@ -349,7 +350,7 @@ class TestHandleInlineQuery:
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
         btn = result.reply_markup.inline_keyboard[0][0]
-        assert btn.callback_data == "more_random"
+        assert btn.callback_data == "more_random_12345"
 
     @pytest.mark.asyncio
     async def test_single_result_returned(self):
@@ -410,6 +411,13 @@ class TestHandleMoreCallback:
 
     SUCCESS_URL = "https://cdn.waifu.im/callback_new.jpg"
     SUCCESS_JSON = {"items": [{"url": SUCCESS_URL}]}
+    OWNER_ID = 12345
+    STRANGER_ID = 99999
+
+    @pytest.fixture(autouse=True)
+    def clear_cooldowns(self):
+        """Сбрасываем кд перед каждым тестом."""
+        bot._cooldowns.clear()
 
     @pytest.fixture
     def mock_bot_edit(self):
@@ -417,11 +425,19 @@ class TestHandleMoreCallback:
         with patch.object(bot.bot, "edit_message_media", AsyncMock(return_value=None)) as m:
             yield m
 
-    def _make_callback(self, data: str, *, has_message: bool = False) -> AsyncMock:
+    def _make_callback(
+        self, tag: str | None, *, has_message: bool = False,
+        clicker_id: int | None = None,
+    ) -> AsyncMock:
+        """Создаёт мок CallbackQuery с корректным callback_data."""
+        tag_part = f"more_{tag}" if tag else "more_random"
+        callback_data = f"{tag_part}_{self.OWNER_ID}"
+
         callback = AsyncMock(spec=CallbackQuery)
-        callback.data = data
+        callback.data = callback_data
+        clicker_id = clicker_id or self.OWNER_ID
         callback.from_user = MagicMock()
-        callback.from_user.id = 12345
+        callback.from_user.id = clicker_id
         # Сообщения из инлайн-режима идут через inline_message_id,
         # а callback.message приходит None.
         callback.inline_message_id = "AQAAABBBCCCDDD" if not has_message else None
@@ -435,7 +451,7 @@ class TestHandleMoreCallback:
 
     @pytest.mark.asyncio
     async def test_extracts_tag_from_callback_data(self, mock_bot_edit):
-        callback = self._make_callback("more_maid")
+        callback = self._make_callback("maid")
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
             await bot.handle_more_callback(callback)
@@ -447,7 +463,7 @@ class TestHandleMoreCallback:
 
     @pytest.mark.asyncio
     async def test_random_callback_passes_no_tag(self, mock_bot_edit):
-        callback = self._make_callback("more_random")
+        callback = self._make_callback(None)
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
             await bot.handle_more_callback(callback)
@@ -457,12 +473,83 @@ class TestHandleMoreCallback:
             params={"IsNsfw": "True"},
         )
 
+    @pytest.mark.asyncio
+    async def test_invalid_callback_data_answered_with_alert(self, mock_bot_edit):
+        """Мусор в callback_data — ответ с ошибкой."""
+        callback = self._make_callback("maid")
+        callback.data = "garbage_data"
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_more_callback(callback)
+
+        callback.answer.assert_awaited_once_with(
+            "Ошибка данных", show_alert=True,
+        )
+
+    # -- Проверка владельца ------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_stranger_cannot_use_button(self, mock_bot_edit):
+        """Чужой пользователь получает alert и отказ."""
+        callback = self._make_callback("maid", clicker_id=self.STRANGER_ID)
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_more_callback(callback)
+
+        callback.answer.assert_awaited_once_with(
+            "❌ Это могут нажимать только тот, кто отправил картинку.",
+            show_alert=True,
+        )
+        mock_bot_edit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_owner_can_use_button(self, mock_bot_edit):
+        """Владелец может нажать кнопку."""
+        callback = self._make_callback("ero")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_more_callback(callback)
+
+        mock_bot_edit.assert_awaited_once()
+
+    # -- Кд ----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_cooldown_rejects_rapid_clicks(self, mock_bot_edit):
+        """Повторное нажатие раньше 3 секунд отклоняется."""
+        callback = self._make_callback("maid")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_more_callback(callback)
+        mock_bot_edit.reset_mock()
+        callback.answer.reset_mock()
+
+        # Второе нажатие сразу — должно быть отклонено
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_more_callback(callback)
+
+        alert_kwargs = [c for c in callback.answer.call_args_list
+                        if c.kwargs.get("show_alert")][0]
+        assert "Подожди" in alert_kwargs.kwargs.get("text", alert_kwargs.args[0] if alert_kwargs.args else "")
+        mock_bot_edit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cooldown_expired_allows_click(self, mock_bot_edit):
+        """После истечения кд нажатие снова проходит."""
+        callback = self._make_callback("maid")
+        # Ставим метку давно
+        bot._cooldowns[self.OWNER_ID] = time.time() - 10
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_more_callback(callback)
+
+        mock_bot_edit.assert_awaited_once()
+
     # -- inline_message_id path (бот вызван через инлайн) ------
 
     @pytest.mark.asyncio
     async def test_edit_via_bot_with_inline_message_id(self, mock_bot_edit):
-        """Сообщение из инлайн-режима → edit через bot."""
-        callback = self._make_callback("more_ero")
+        callback = self._make_callback("ero")
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
@@ -472,11 +559,12 @@ class TestHandleMoreCallback:
         assert kwargs["inline_message_id"] == "AQAAABBBCCCDDD"
         assert isinstance(kwargs["media"], InputMediaPhoto)
         assert kwargs["media"].media == self.SUCCESS_URL
-        assert kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "more_ero"
+        assert kwargs["reply_markup"].inline_keyboard[0][
+            0].callback_data == f"more_ero_{self.OWNER_ID}"
 
     @pytest.mark.asyncio
     async def test_inline_edit_media_contains_InputMediaPhoto(self, mock_bot_edit):
-        callback = self._make_callback("more_ero")
+        callback = self._make_callback("ero")
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
@@ -487,29 +575,29 @@ class TestHandleMoreCallback:
 
     @pytest.mark.asyncio
     async def test_inline_edit_has_reply_markup(self, mock_bot_edit):
-        callback = self._make_callback("more_ero")
+        callback = self._make_callback("ero")
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
 
         _args, kwargs = mock_bot_edit.call_args
         rm = kwargs["reply_markup"]
-        assert rm.inline_keyboard[0][0].callback_data == "more_ero"
+        assert rm.inline_keyboard[0][0].callback_data == f"more_ero_{self.OWNER_ID}"
 
     @pytest.mark.asyncio
     async def test_inline_random_edit_has_random_markup(self, mock_bot_edit):
-        callback = self._make_callback("more_random")
+        callback = self._make_callback(None)
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
 
         _args, kwargs = mock_bot_edit.call_args
         rm = kwargs["reply_markup"]
-        assert rm.inline_keyboard[0][0].callback_data == "more_random"
+        assert rm.inline_keyboard[0][0].callback_data == f"more_random_{self.OWNER_ID}"
 
     @pytest.mark.asyncio
     async def test_inline_caption_contains_tag(self, mock_bot_edit):
-        callback = self._make_callback("more_maid")
+        callback = self._make_callback("maid")
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
@@ -519,7 +607,7 @@ class TestHandleMoreCallback:
 
     @pytest.mark.asyncio
     async def test_inline_caption_contains_random(self, mock_bot_edit):
-        callback = self._make_callback("more_random")
+        callback = self._make_callback(None)
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
@@ -531,8 +619,7 @@ class TestHandleMoreCallback:
 
     @pytest.mark.asyncio
     async def test_edit_via_message_when_no_inline_id(self):
-        """Если inline_message_id нет — редактируем через message.edit_media."""
-        callback = self._make_callback("more_ero", has_message=True)
+        callback = self._make_callback("ero", has_message=True)
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
@@ -541,11 +628,12 @@ class TestHandleMoreCallback:
         _args, kwargs = callback.message.edit_media.call_args
         assert isinstance(kwargs["media"], InputMediaPhoto)
         assert kwargs["media"].media == self.SUCCESS_URL
-        assert kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "more_ero"
+        assert kwargs["reply_markup"].inline_keyboard[0][
+            0].callback_data == f"more_ero_{self.OWNER_ID}"
 
     @pytest.mark.asyncio
     async def test_message_edit_caption_contains_tag(self):
-        callback = self._make_callback("more_maid", has_message=True)
+        callback = self._make_callback("maid", has_message=True)
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
@@ -557,7 +645,7 @@ class TestHandleMoreCallback:
 
     @pytest.mark.asyncio
     async def test_answer_called_on_success(self, mock_bot_edit):
-        callback = self._make_callback("more_waifu")
+        callback = self._make_callback("waifu")
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_more_callback(callback)
@@ -566,7 +654,7 @@ class TestHandleMoreCallback:
 
     @pytest.mark.asyncio
     async def test_answer_with_alert_on_edit_failure(self, mock_bot_edit):
-        callback = self._make_callback("more_waifu")
+        callback = self._make_callback("waifu")
         mock_bot_edit.side_effect = Exception("edit failed")
         callback.answer = AsyncMock(return_value=None)
 
