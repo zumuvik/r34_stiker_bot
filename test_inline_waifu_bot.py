@@ -373,7 +373,45 @@ class TestHandleInlineQuery:
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
         assert result.photo_url == bot.FALLBACK_IMAGE_URL
-        assert result.thumbnail_url == bot.FALLBACK_IMAGE_URL
+        assert result.thumbnail_url == bot.THUMBNAIL_PLACEHOLDER
+
+    @pytest.mark.asyncio
+    async def test_thumbnail_is_placeholder_not_photo(self):
+        """Превью — плейсхолдер, а не NSFW-картинка."""
+        query = self._make_query("maid")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        # thumbnail отличается от photo_url
+        assert result.thumbnail_url == bot.THUMBNAIL_PLACEHOLDER
+        assert result.thumbnail_url != result.photo_url
+
+    @pytest.mark.asyncio
+    async def test_title_shows_tag(self):
+        """В title отображается тег."""
+        query = self._make_query("ero")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert result.title == "🎴 Показать карточку (ero)"
+
+    @pytest.mark.asyncio
+    async def test_title_shows_random_when_no_tag(self):
+        """Без тега в title пишется random."""
+        query = self._make_query("")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert result.title == "🎴 Показать карточку (random)"
 
     @pytest.mark.asyncio
     async def test_caption_does_not_contain_davai_eshe(self):

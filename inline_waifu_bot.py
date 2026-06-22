@@ -54,6 +54,9 @@ WAIFU_API_URL: str = "https://api.waifu.im/images"
 FALLBACK_IMAGE_URL: str = "https://placehold.co/512x512/1a1a2e/ffffff?text=NSFW+Error"
 # Заглушка на случай недоступности Waifu.im API или ошибочного ответа.
 
+THUMBNAIL_PLACEHOLDER: str = "https://placehold.co/512x512/1a1a2e/ffffff?text=Waifu+NSFW"
+"""Плейсхолдер для превью в инлайн-результатах (не показываем NSFW до отправки)."""
+
 API_TIMEOUT_SECONDS: int = 5
 """Таймаут HTTP-запроса к Waifu.im API (в секундах)."""
 
@@ -227,13 +230,16 @@ async def handle_inline_query(query: InlineQuery) -> None:
     logger.info("Inline-запрос от %s: тег='%s'", owner_id, tag)
 
     image_url = await fetch_nsfw_image(tag)
+    tag_display = tag or "random"
 
     result = InlineQueryResultPhoto(
         # Случайный ID — предотвращает склейку одинаковых результатов
         # на стороне клиента Telegram.
         id=secrets.token_hex(8),
         photo_url=image_url,
-        thumbnail_url=image_url,
+        # В превью показываем плейсхолдер, а не саму NSFW-картинку.
+        thumbnail_url=THUMBNAIL_PLACEHOLDER,
+        title=f"🎴 Показать карточку ({tag_display})",
         reply_markup=build_markup(tag, owner_id),
         caption=(
             f"<b>NSFW Anime</b>\n"
