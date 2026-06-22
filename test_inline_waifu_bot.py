@@ -131,8 +131,8 @@ class TestFetchNsfwImage:
 
     FALLBACK = bot.FALLBACK_IMAGE_URL
     SUCCESS_URL = "https://cdn.waifu.im/test_123.jpg"
-    SUCCESS_JSON = {"images": [{"url": SUCCESS_URL}]}
-    EMPTY_JSON = {"images": []}
+    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL}]}
+    EMPTY_JSON = {"items": []}
 
     # -- Успех -------------------------------------------------
 
@@ -219,7 +219,7 @@ class TestFetchNsfwImage:
 
     @pytest.mark.asyncio
     async def test_image_missing_url_key(self):
-        with _mock_aiohttp_get(json_data={"images": [{"id": 1}]}):
+        with _mock_aiohttp_get(json_data={"items": [{"id": 1}]}):
             url = await bot.fetch_nsfw_image()
 
         assert url == self.FALLBACK
@@ -258,7 +258,7 @@ class TestHandleInlineQuery:
     """Проверяем логику формирования ответа на инлайн-запрос."""
 
     SUCCESS_URL = "https://cdn.waifu.im/inline_test.jpg"
-    SUCCESS_JSON = {"images": [{"url": SUCCESS_URL}]}
+    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL}]}
 
     def _make_query(self, text: str) -> AsyncMock:
         query = AsyncMock(spec=InlineQuery)
@@ -384,7 +384,7 @@ class TestHandleMoreCallback:
     """Проверяем логику кнопки «Давай ещё!»."""
 
     SUCCESS_URL = "https://cdn.waifu.im/callback_new.jpg"
-    SUCCESS_JSON = {"images": [{"url": SUCCESS_URL}]}
+    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL}]}
 
     def _make_callback(self, data: str) -> AsyncMock:
         callback = AsyncMock(spec=CallbackQuery)

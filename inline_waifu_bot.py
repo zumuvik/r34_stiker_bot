@@ -117,13 +117,14 @@ async def fetch_nsfw_image(tag: str | None = None) -> str:
                     return FALLBACK_IMAGE_URL
 
                 data = await response.json()
-                images = data.get("images", [])
+                # API возвращает список в поле "items" (не "images")
+                items = data.get("items") or data.get("images", [])
 
-                if not images:
+                if not items:
                     logger.error("Waifu API вернул пустой список изображений")
                     return FALLBACK_IMAGE_URL
 
-                return images[0]["url"]
+                return items[0]["url"]
 
     except asyncio.TimeoutError:
         logger.error(
