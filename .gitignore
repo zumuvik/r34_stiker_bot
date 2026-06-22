@@ -9,3 +9,5 @@ build/
 venv/
 bot.log
 bot_stats.db
+bot_stats.db-wal
+bot_stats.db-shm
