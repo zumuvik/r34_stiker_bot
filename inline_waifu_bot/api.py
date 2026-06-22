@@ -1,5 +1,10 @@
 """
-Работа с провайдерами контента: Waifu.im (фото) и Purrbot API (GIF).
+Работа с провайдерами контента:
+
+* Waifu.im (фото) — основные теги
+* Purrbot API (GIF) — анимации
+* waifu.pics (фото) — femboy
+* Nekos API v4 (фото) — furry
 
 Каждая функция-загрузчик возвращает ``(media_url, media_type, display_tag)``,
 где ``display_tag`` — реальный тег контента (полезно при random-выборе).
@@ -36,7 +41,23 @@ async def fetch_nsfw_content(
         ``display_tag`` — реальный тег полученного контента.
         При ошибке возвращает ``(FALLBACK_IMAGE_URL, "photo", "error")``.
     """
-    # ── Конкретный видео-тег ────────────────────────────
+    # ── femboy (waifu.pics) ─────────────────────────────
+    if tag is not None and config.is_femboy_tag(tag):
+        try:
+            return await _fetch_femboy_photo()
+        except Exception:
+            logger.exception("Femboy fetch failed")
+            return (config.FALLBACK_IMAGE_URL, "photo", "error")
+
+    # ── furry (Nekos API v4) ────────────────────────────
+    if tag is not None and config.is_furry_tag(tag):
+        try:
+            return await _fetch_furry_photo()
+        except Exception:
+            logger.exception("Furry fetch failed")
+            return (config.FALLBACK_IMAGE_URL, "photo", "error")
+
+    # ── Конкретный видео-тег (Purrbot) ──────────────────
     if tag is not None and config.is_video_tag(tag):
         endpoint = config.get_video_endpoint(tag)
         try:
@@ -46,7 +67,7 @@ async def fetch_nsfw_content(
             logger.exception("Purrbot fetch failed, falling back to photo")
             return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
-    # ── Конкретный фото-тег ─────────────────────────────
+    # ── Конкретный фото-тег (Waifu.im) ──────────────────
     if tag is not None and config.is_photo_tag(tag):
         url, _ = await _fetch_waifu_photo(tag)
         return (url, "photo", tag)
@@ -193,3 +214,73 @@ async def _fetch_purrbot(endpoint: str) -> str:
                 raise ValueError("Purrbot response missing 'link'")
 
             return link
+
+
+# ─────────────────── waifu.pics (femboy фото) ───────────────────
+
+
+async def _fetch_femboy_photo() -> tuple[str, str, str]:
+    """
+    Запрашивает NSFW-фото femboy через waifu.pics API.
+
+    Returns:
+        ``(url, "photo", "femboy")``.
+
+    Raises:
+        Exception: При любых сетевых/парсинговых ошибках.
+    """
+    url = config.FEMBOY_API_URL
+    timeout = aiohttp.ClientTimeout(total=config.API_TIMEOUT_SECONDS)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as response:
+            if response.status != 200:
+                body = await response.text()
+                logger.error(
+                    "waifu.pics вернул %s: %s", response.status, body
+                )
+                raise ValueError(f"waifu.pics status {response.status}")
+
+            data = await response.json()
+            image_url = data.get("url")
+            if not image_url:
+                raise ValueError("waifu.pics response missing 'url'")
+
+            return (image_url, "photo", "femboy")
+
+
+# ─────────────────── Nekos API v4 (furry фото) ───────────────────
+
+
+async def _fetch_furry_photo() -> tuple[str, str, str]:
+    """
+    Запрашивает NSFW-фото furry через Nekos API v4.
+
+    Returns:
+        ``(url, "photo", "furry")``.
+
+    Raises:
+        Exception: При любых сетевых/парсинговых ошибках.
+    """
+    params = {"rating": "explicit", "limit": "1", "tags": "furry"}
+    timeout = aiohttp.ClientTimeout(total=config.API_TIMEOUT_SECONDS)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(config.FURRY_API_URL, params=params) as response:
+            if response.status != 200:
+                body = await response.text()
+                logger.error(
+                    "Nekos API вернул %s: %s", response.status, body
+                )
+                raise ValueError(f"Nekos API status {response.status}")
+
+            data = await response.json()
+            items = data.get("items")
+            if not items or not isinstance(items, list) or len(items) == 0:
+                raise ValueError("Nekos API вернул пустой список")
+
+            image_url = items[0].get("url")
+            if not image_url:
+                raise ValueError("Nekos API item missing 'url'")
+
+            return (image_url, "photo", "furry")

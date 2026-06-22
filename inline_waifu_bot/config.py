@@ -101,8 +101,20 @@ VIDEO_ENDPOINTS: dict[str, str] = {
     "nsfw_gif":   "v2/img/nsfw/neko/gif",
 }
 
+# Теги для новых провайдеров (НЕ входят в PHOTO_TAGS / VIDEO_TAGS,
+# поэтому не попадают в random-выборку).
+FEMBOY_TAGS: frozenset[str] = frozenset({"femboy"})
+FURRY_TAGS: frozenset[str] = frozenset({"furry"})
+
+# API-эндпоинты для новых провайдеров.
+FEMBOY_API_URL: str = "https://api.waifu.pics/nsfw/trap"
+"""waifu.pics — femboy/trap NSFW фото."""
+
+FURRY_API_URL: str = "https://api.nekosapi.com/v4/images/random"
+"""Nekos API v4 — furry NSFW фото (с тегом furry + rating=explicit)."""
+
 # Объединённое множество (для валидации).
-VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS)
+VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS | FEMBOY_TAGS | FURRY_TAGS)
 
 
 # ─────────────────── Хелперы ───────────────────
@@ -134,6 +146,20 @@ def is_photo_tag(tag: str | None) -> bool:
     if tag is None:
         return False
     return tag in PHOTO_TAGS
+
+
+def is_femboy_tag(tag: str | None) -> bool:
+    """Является ли тег femboy-тегом (waifu.pics)."""
+    if tag is None:
+        return False
+    return tag in FEMBOY_TAGS
+
+
+def is_furry_tag(tag: str | None) -> bool:
+    """Является ли тег furry-тегом (Nekos API v4)."""
+    if tag is None:
+        return False
+    return tag in FURRY_TAGS
 
 
 def get_video_endpoint(tag: str) -> str:

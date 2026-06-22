@@ -30,6 +30,8 @@ from .config import (  # noqa: F401, E402
     BOT_TOKEN,
     WAIFU_API_URL,
     FALLBACK_IMAGE_URL,
+    FEMBOY_API_URL,
+    FURRY_API_URL,
     API_TIMEOUT_SECONDS,
     BUTTON_COOLDOWN,
     POSITIVE_PHRASES,
@@ -37,10 +39,14 @@ from .config import (  # noqa: F401, E402
     VALID_TAGS,
     PHOTO_TAGS,
     VIDEO_TAGS,
+    FEMBOY_TAGS,
+    FURRY_TAGS,
     VIDEO_ENDPOINTS,
     validate_tag,
     is_video_tag,
     is_photo_tag,
+    is_femboy_tag,
+    is_furry_tag,
     get_video_endpoint,
 )
 from .api import fetch_nsfw_content  # noqa: F401, E402

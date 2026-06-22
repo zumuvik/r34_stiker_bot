@@ -1109,6 +1109,38 @@ class TestModuleConfig:
     def test_get_video_endpoint_unknown_tag_returns_tag_itself(self):
         assert bot.get_video_endpoint("unknown") == "unknown"
 
+    # ── femboy / furry ─────────────────────────────────────
+
+    def test_femboy_tag_is_valid(self):
+        assert "femboy" in bot.VALID_TAGS
+
+    def test_furry_tag_is_valid(self):
+        assert "furry" in bot.VALID_TAGS
+
+    def test_femboy_not_in_photo_tags(self):
+        """femboy не в PHOTO_TAGS → не попадает в random."""
+        assert "femboy" not in bot.PHOTO_TAGS
+
+    def test_furry_not_in_photo_tags(self):
+        """furry не в PHOTO_TAGS → не попадает в random."""
+        assert "furry" not in bot.PHOTO_TAGS
+
+    def test_femboy_not_in_video_tags(self):
+        assert "femboy" not in bot.VIDEO_TAGS
+
+    def test_furry_not_in_video_tags(self):
+        assert "furry" not in bot.VIDEO_TAGS
+
+    def test_is_femboy_tag(self):
+        assert bot.is_femboy_tag("femboy") is True
+        assert bot.is_femboy_tag("maid") is False
+        assert bot.is_femboy_tag(None) is False
+
+    def test_is_furry_tag(self):
+        assert bot.is_furry_tag("furry") is True
+        assert bot.is_furry_tag("neko_gif") is False
+        assert bot.is_furry_tag(None) is False
+
 
 # ─────────────────────────────────────────────────
 #  Database: init_db, update_user_sperm, get_leaderboard
