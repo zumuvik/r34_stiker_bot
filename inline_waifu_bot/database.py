@@ -37,6 +37,14 @@ def init_db() -> None:
             total_sperm INTEGER NOT NULL DEFAULT 0
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_tag_stats (
+            user_id INTEGER NOT NULL,
+            tag     TEXT    NOT NULL,
+            count   INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, tag)
+        )
+    """)
     conn.commit()
     logger.info("Database initialised at %s", DB_PATH)
 
@@ -77,5 +85,45 @@ def get_leaderboard(limit: int = 10) -> list[dict]:
         LIMIT ?
         """,
         (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def increment_tag_count(user_id: int, tag: str) -> None:
+    """
+    Увеличивает счётчик просмотров тега ``tag`` для пользователя ``user_id``.
+
+    При первом просмотре создаёт запись с ``count=1``,
+    при повторных — ``count = count + 1``.
+    """
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO user_tag_stats (user_id, tag, count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(user_id, tag) DO UPDATE SET
+            count = count + 1
+        """,
+        (user_id, tag),
+    )
+    conn.commit()
+
+
+def get_user_favorite_tags(user_id: int, limit: int = 3) -> list[dict]:
+    """
+    Возвращает топ-``limit`` самых просматриваемых тегов пользователя.
+
+    Каждый элемент: ``{"tag": str, "count": int}``.
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT tag, count
+        FROM user_tag_stats
+        WHERE user_id = ?
+        ORDER BY count DESC, tag ASC
+        LIMIT ?
+        """,
+        (user_id, limit),
     ).fetchall()
     return [dict(r) for r in rows]

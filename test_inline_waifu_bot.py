@@ -510,7 +510,10 @@ class TestHandleVerifyCallback:
     @pytest.fixture(autouse=True)
     def _patch_db(self):
         """Старые тесты не тестируют статистику — мокаем запись в БД."""
-        with patch("inline_waifu_bot.handlers.database.update_user_sperm"):
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
             yield
 
     @pytest.fixture
@@ -718,7 +721,10 @@ class TestHandleMoreCallback:
     @pytest.fixture(autouse=True)
     def _patch_db(self):
         """Старые тесты не тестируют статистику — мокаем запись в БД."""
-        with patch("inline_waifu_bot.handlers.database.update_user_sperm"):
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
             yield
 
     @pytest.fixture
@@ -1196,6 +1202,102 @@ class TestDatabase:
 
 
 # ─────────────────────────────────────────────────
+#  Tag tracking: increment_tag_count, get_user_favorite_tags
+# ─────────────────────────────────────────────────
+
+
+class TestTagTracking:
+    """Проверяет таблицу user_tag_stats."""
+
+    @pytest.fixture(autouse=True)
+    def _in_memory_db(self):
+        """Та же in-memory фикстура, что и в TestDatabase."""
+        import inline_waifu_bot.database as db_mod
+
+        orig_db_conn = db_mod.get_connection
+        orig_bot_conn = bot.get_connection
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        db_mod.get_connection = lambda: conn
+        bot.get_connection = lambda: conn
+        db_mod.init_db()
+        yield
+        db_mod.get_connection = orig_db_conn
+        bot.get_connection = orig_bot_conn
+        conn.close()
+
+    def test_increment_new_tag(self):
+        """Первый вызов создаёт запись с count=1."""
+        bot.increment_tag_count(1, "waifu")
+        conn = bot.get_connection()
+        row = conn.execute(
+            "SELECT count FROM user_tag_stats WHERE user_id=? AND tag=?",
+            (1, "waifu"),
+        ).fetchone()
+        assert row["count"] == 1
+
+    def test_increment_existing_tag(self):
+        """Повторный вызов увеличивает count."""
+        bot.increment_tag_count(1, "maid")
+        bot.increment_tag_count(1, "maid")
+        conn = bot.get_connection()
+        row = conn.execute(
+            "SELECT count FROM user_tag_stats WHERE user_id=? AND tag=?",
+            (1, "maid"),
+        ).fetchone()
+        assert row["count"] == 2
+
+    def test_composite_key_different_users(self):
+        """Один и тот же тег для разных юзеров — разные строки."""
+        bot.increment_tag_count(1, "ero")
+        bot.increment_tag_count(2, "ero")
+        conn = bot.get_connection()
+        rows = conn.execute(
+            "SELECT user_id, count FROM user_tag_stats WHERE tag=? ORDER BY user_id",
+            ("ero",),
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["count"] == 1
+        assert rows[1]["count"] == 1
+
+    def test_composite_key_different_tags(self):
+        """Один юзер с разными тегами — разные строки."""
+        bot.increment_tag_count(1, "waifu")
+        bot.increment_tag_count(1, "maid")
+        conn = bot.get_connection()
+        rows = conn.execute(
+            "SELECT tag, count FROM user_tag_stats WHERE user_id=? ORDER BY tag",
+            (1,),
+        ).fetchall()
+        assert len(rows) == 2
+
+    def test_get_favorite_tags_empty(self):
+        """Если тегов нет — пустой список."""
+        assert bot.get_user_favorite_tags(999) == []
+
+    def test_get_favorite_tags_ordering(self):
+        """Топ сортируется по count DESC."""
+        bot.increment_tag_count(1, "a")
+        bot.increment_tag_count(1, "b")
+        bot.increment_tag_count(1, "b")
+        bot.increment_tag_count(1, "c")
+        bot.increment_tag_count(1, "c")
+        bot.increment_tag_count(1, "c")
+        top = bot.get_user_favorite_tags(1)
+        assert len(top) == 3
+        assert top[0]["tag"] == "c"  # 3 раза
+        assert top[1]["tag"] == "b"  # 2 раза
+        assert top[2]["tag"] == "a"  # 1 раз
+
+    def test_get_favorite_tags_limit(self):
+        """Параметр limit работает."""
+        for t in ("a", "b", "c", "d"):
+            bot.increment_tag_count(1, t)
+        top2 = bot.get_user_favorite_tags(1, limit=2)
+        assert len(top2) == 2
+
+
+# ─────────────────────────────────────────────────
 #  Stats line в verify_callback
 # ─────────────────────────────────────────────────
 
@@ -1232,6 +1334,7 @@ class TestStatsInVerifyCallback:
         cb = self._make_callback("waifu")
         with (
             patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
             patch("secrets.randbelow", side_effect=[10, 0]),  # delta=11, positive
             patch("secrets.choice", return_value="Вы подододрочель"),
         ):
@@ -1250,6 +1353,7 @@ class TestStatsInVerifyCallback:
         cb = self._make_callback("ero")
         with (
             patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
             patch("secrets.randbelow", side_effect=[5, 1]),  # delta=6, negative
             patch("secrets.choice", return_value="У тебя сегодня отсох хуец."),
         ):
@@ -1268,6 +1372,7 @@ class TestStatsInVerifyCallback:
         cb = self._make_callback("maid")
         with patch("inline_waifu_bot.handlers.database.update_user_sperm") as mock_upd:
             with (
+                patch("inline_waifu_bot.handlers.database.increment_tag_count"),
                 patch("secrets.randbelow", return_value=0),   # delta=1, positive
                 patch("secrets.choice", return_value="Вы подододрочель"),
             ):
@@ -1287,6 +1392,7 @@ class TestStatsInVerifyCallback:
         ]
         with (
             patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
             patch("secrets.randbelow", side_effect=[3, 0]),
             patch("secrets.choice", return_value="Вы подододрочель"),
         ):
@@ -1340,6 +1446,7 @@ class TestStatsInMoreCallback:
         cb = self._make_callback("maid")
         with (
             patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
             patch("secrets.randbelow", side_effect=[7, 0]),
             patch("secrets.choice", return_value="Вы выдрочили яца"),
         ):
@@ -1361,6 +1468,7 @@ class TestStatsInMoreCallback:
         ]
         with (
             patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
             patch("secrets.randbelow", side_effect=[2, 1]),
             patch("secrets.choice", return_value="У вас отвалился хуй"),
         ):
@@ -1381,6 +1489,15 @@ class TestStatsInMoreCallback:
 
 class TestLeaderboardInlineQuery:
     """Проверяем, что 'top'/'stats' возвращает лидерборд, а не NSFW."""
+
+    @pytest.fixture(autouse=True)
+    def mock_fav_tags(self):
+        """Подменяем get_user_favorite_tags — по дефолту возвращаем пустой список."""
+        with patch(
+            "inline_waifu_bot.handlers.database.get_user_favorite_tags",
+            return_value=[],
+        ) as m:
+            yield m
 
     @pytest.fixture
     def mock_leaderboard(self):
@@ -1405,7 +1522,7 @@ class TestLeaderboardInlineQuery:
         return query
 
     @pytest.mark.asyncio
-    async def test_returns_article_for_top(self, mock_leaderboard):
+    async def test_returns_article_for_top(self, mock_leaderboard, mock_fav_tags):
         query = self._make_query("top")
         await bot.handle_inline_query(query)
         query.answer.assert_awaited_once()
@@ -1414,7 +1531,7 @@ class TestLeaderboardInlineQuery:
         assert isinstance(result, InlineQueryResultArticle)
 
     @pytest.mark.asyncio
-    async def test_returns_article_for_stats(self, mock_leaderboard):
+    async def test_returns_article_for_stats(self, mock_leaderboard, mock_fav_tags):
         query = self._make_query("stats")
         await bot.handle_inline_query(query)
         query.answer.assert_awaited_once()
@@ -1423,18 +1540,20 @@ class TestLeaderboardInlineQuery:
         assert isinstance(result, InlineQueryResultArticle)
 
     @pytest.mark.asyncio
-    async def test_leaderboard_content(self, mock_leaderboard):
+    async def test_leaderboard_content(self, mock_leaderboard, mock_fav_tags):
         query = self._make_query("top")
         await bot.handle_inline_query(query)
         _args, kwargs = query.answer.call_args
         text = kwargs["results"][0].input_message_content.message_text
         assert "🏆" in text
-        assert "Топ дрочеров" in text
+        assert "ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА" in text
         assert "🥇 alpha" in text or "alpha" in text
         assert "🥈 beta" in text or "beta" in text
         assert "User #3" in text  # пустой username → User #ID
         assert "100 мл спермы" in text
         assert "50 мл спермы" in text
+        # Пустая история
+        assert "Ты ещё не дрочил" in text
 
     @pytest.mark.asyncio
     async def test_leaderboard_empty(self):
@@ -1443,19 +1562,23 @@ class TestLeaderboardInlineQuery:
             "inline_waifu_bot.handlers.database.get_leaderboard",
             return_value=[],
         ):
-            await bot.handle_inline_query(query)
+            with patch(
+                "inline_waifu_bot.handlers.database.get_user_favorite_tags",
+                return_value=[],
+            ):
+                await bot.handle_inline_query(query)
         _args, kwargs = query.answer.call_args
         text = kwargs["results"][0].input_message_content.message_text
         assert "Пока никого нет" in text
 
     @pytest.mark.asyncio
-    async def test_top_case_insensitive(self, mock_leaderboard):
+    async def test_top_case_insensitive(self, mock_leaderboard, mock_fav_tags):
         query = self._make_query("TOP")
         await bot.handle_inline_query(query)
         query.answer.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_stats_with_whitespace(self, mock_leaderboard):
+    async def test_stats_with_whitespace(self, mock_leaderboard, mock_fav_tags):
         query = self._make_query("  stats  ")
         await bot.handle_inline_query(query)
         query.answer.assert_awaited_once()
@@ -1472,9 +1595,48 @@ class TestLeaderboardInlineQuery:
         assert result.title == "🔞 Подрочить на maid"
 
     @pytest.mark.asyncio
-    async def test_cache_time_zero_for_leaderboard(self, mock_leaderboard):
+    async def test_cache_time_zero_for_leaderboard(self, mock_leaderboard, mock_fav_tags):
         query = self._make_query("top")
         await bot.handle_inline_query(query)
         _args, kwargs = query.answer.call_args
         assert kwargs["cache_time"] == 0
         assert kwargs["is_personal"] is True
+
+    @pytest.mark.asyncio
+    async def test_personal_stats_shown_with_tags(self):
+        """Если есть теги, показываются излюбленные."""
+        query = self._make_query("top")
+        with patch(
+            "inline_waifu_bot.handlers.database.get_leaderboard",
+            return_value=[{"user_id": 1, "username": "alpha", "total_sperm": 100}],
+        ):
+            with patch(
+                "inline_waifu_bot.handlers.database.get_user_favorite_tags",
+                return_value=[
+                    {"tag": "waifu", "count": 5},
+                    {"tag": "maid", "count": 3},
+                ],
+            ):
+                await bot.handle_inline_query(query)
+        _args, kwargs = query.answer.call_args
+        text = kwargs["results"][0].input_message_content.message_text
+        assert "waifu (5 раз)" in text
+        assert "maid (3 раз)" in text
+        assert "Твои излюбленные теги" in text
+
+    @pytest.mark.asyncio
+    async def test_personal_stats_empty_when_no_history(self):
+        """Если истории нет — соответствующее сообщение."""
+        query = self._make_query("top")
+        with patch(
+            "inline_waifu_bot.handlers.database.get_leaderboard",
+            return_value=[{"user_id": 1, "username": "alpha", "total_sperm": 100}],
+        ):
+            with patch(
+                "inline_waifu_bot.handlers.database.get_user_favorite_tags",
+                return_value=[],
+            ):
+                await bot.handle_inline_query(query)
+        _args, kwargs = query.answer.call_args
+        text = kwargs["results"][0].input_message_content.message_text
+        assert "Ты ещё не дрочил, твоя история пуста" in text

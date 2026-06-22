@@ -50,6 +50,8 @@ from .database import (  # noqa: F401, E402
     update_user_sperm,
     get_leaderboard,
     get_connection,
+    increment_tag_count,
+    get_user_favorite_tags,
 )
 
 # Регистрация хэндлеров на dp (выполняется в момент импорта).

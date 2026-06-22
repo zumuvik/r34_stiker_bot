@@ -131,9 +131,9 @@ async def handle_inline_query(query: InlineQuery) -> None:
         top_users = await asyncio.to_thread(database.get_leaderboard)
 
         if not top_users:
-            text = "🏆 <b>Топ дрочеров</b>\n\nПока никого нет. Начни дрочить первым! 🔞"
+            text = "🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\nПока никого нет. Начни дрочить первым! 🔞"
         else:
-            lines = ["🏆 <b>Топ дрочеров</b>\n\n"]
+            lines = ["🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"]
             for i, u in enumerate(top_users, 1):
                 name = u["username"] or f"User #{u['user_id']}"
                 sperm = u["total_sperm"]
@@ -141,9 +141,27 @@ async def handle_inline_query(query: InlineQuery) -> None:
                 lines.append(f"{medal} <b>{name}</b> — {sperm} мл спермы")
             text = "\n".join(lines)
 
+        # ── Персональная статистика ───────────────────────
+        fav_tags = await asyncio.to_thread(database.get_user_favorite_tags, creator_id)
+        if fav_tags:
+            tags_str = ", ".join(
+                f"{t['tag']} ({t['count']} раз)" for t in fav_tags
+            )
+            text += (
+                "\n\n------------------------\n"
+                "твоя статистика:\n"
+                f"📊 Твои излюбленные теги: {tags_str}"
+            )
+        else:
+            text += (
+                "\n\n------------------------\n"
+                "твоя статистика:\n"
+                "📊 Ты ещё не дрочил, твоя история пуста."
+            )
+
         article = InlineQueryResultArticle(
             id=secrets.token_hex(8),
-            title="🏆 Топ дрочеров",
+            title="🏆 ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА",
             description="Посмотреть таблицу лидеров",
             input_message_content=InputTextMessageContent(
                 message_text=text,
@@ -244,6 +262,8 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     stats_line = await _generate_stats(creator_id, callback.from_user.username)
 
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
+    # Трекинг реального тега (не "random") в БД
+    await asyncio.to_thread(database.increment_tag_count, creator_id, display_tag)
     caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
     media_obj = _build_media(media_url, media_type, caption)
 
@@ -331,6 +351,8 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     stats_line = await _generate_stats(clicker_id, callback.from_user.username)
 
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
+    # Трекинг реального тега (не "random") в БД
+    await asyncio.to_thread(database.increment_tag_count, clicker_id, display_tag)
     caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
     media_obj = _build_media(media_url, media_type, caption)
 
