@@ -191,10 +191,12 @@ async def _build_leaderboard_text() -> str:
 
     lines = ["🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"]
     for i, u in enumerate(top_users, 1):
-        name = u["username"] or f"User #{u['user_id']}"
+        display_name = f"@{u['username']}" if u["username"] else f"User #{u['user_id']}"
         sperm = u["total_sperm"]
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-        lines.append(f"{medal} <b>{name}</b> — {sperm} мл спермы")
+        lines.append(
+            f'{medal} <a href="tg://user?id={u["user_id"]}"><b>{display_name}</b></a> — {sperm} мл спермы'
+        )
     return "\n".join(lines)
 
 
