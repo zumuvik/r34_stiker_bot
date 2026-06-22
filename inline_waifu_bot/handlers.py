@@ -9,6 +9,7 @@
 
 import asyncio
 import logging
+import math
 import secrets
 import time
 
@@ -249,6 +250,9 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     try:
         await _edit_message(callback, media_obj, build_markup(tag, creator_id))
     except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            logger.info("Verify — контент не изменился, пропускаем.")
+            return
         logger.warning(
             "Verify media (type=%s) failed edit: %s. Falling back to cat photo.",
             media_type, exc,
@@ -309,7 +313,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     now = time.time()
     last = _cooldowns.get(clicker_id, 0.0)
     if now - last < config.BUTTON_COOLDOWN:
-        remaining = int(config.BUTTON_COOLDOWN - (now - last))
+        remaining = math.ceil(config.BUTTON_COOLDOWN - (now - last))
         logger.info("Кд у %s: осталось %dс", clicker_id, remaining)
         await callback.answer(
             f"⏳ Подожди {remaining} с перед следующим нажатием.",
@@ -334,6 +338,10 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         await _edit_message(callback, media_obj, build_markup(tag, creator_id))
         await callback.answer()
     except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            logger.info("More — контент не изменился, пропускаем.")
+            await callback.answer()
+            return
         logger.warning(
             "More media (type=%s) failed edit: %s. Falling back to cat photo.",
             media_type, exc,
