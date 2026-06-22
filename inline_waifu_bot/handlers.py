@@ -122,16 +122,25 @@ async def handle_inline_query(query: InlineQuery) -> None:
     Возвращает ``InlineQueryResultArticle`` — текст-заглушку с кнопкой
     верификации. В callback_data зашит ``creator_id``.
     """
-    creator_id = query.from_user.id
-    raw_query = query.query.strip().lower()
+    # Шаг 1: очищаем запрос от пробелов, приводим к нижнему регистру
+    user_query = query.query.strip().lower()
 
-    # ── Лидерборд по запросу "top" / "stats" ───────────────
-    if raw_query in ("top", "stats"):
-        logger.info("Лидерборд от %s", creator_id)
-        top_users = await asyncio.to_thread(database.get_leaderboard)
+    # Шаг 2: short-circuit — top / stats
+    if user_query in ["top", "stats"]:
+        logger.info("Лидерборд от %s", query.from_user.id)
 
+        # Запрашиваем топ-10 и излюбленные теги пользователя
+        top_users = await asyncio.to_thread(database.get_leaderboard, 10)
+        fav_tags = await asyncio.to_thread(
+            database.get_user_favorite_tags, query.from_user.id,
+        )
+
+        # Формируем текст лидерборда
         if not top_users:
-            text = "🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\nПока никого нет. Начни дрочить первым! 🔞"
+            lb_text = (
+                "🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"
+                "Пока никого нет. Начни дрочить первым! 🔞"
+            )
         else:
             lines = ["🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"]
             for i, u in enumerate(top_users, 1):
@@ -139,21 +148,20 @@ async def handle_inline_query(query: InlineQuery) -> None:
                 sperm = u["total_sperm"]
                 medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
                 lines.append(f"{medal} <b>{name}</b> — {sperm} мл спермы")
-            text = "\n".join(lines)
+            lb_text = "\n".join(lines)
 
-        # ── Персональная статистика ───────────────────────
-        fav_tags = await asyncio.to_thread(database.get_user_favorite_tags, creator_id)
+        # Прикрепляем персональный блок
         if fav_tags:
             tags_str = ", ".join(
                 f"{t['tag']} ({t['count']} раз)" for t in fav_tags
             )
-            text += (
+            lb_text += (
                 "\n\n------------------------\n"
                 "твоя статистика:\n"
                 f"📊 Твои излюбленные теги: {tags_str}"
             )
         else:
-            text += (
+            lb_text += (
                 "\n\n------------------------\n"
                 "твоя статистика:\n"
                 "📊 Ты ещё не дрочил, твоя история пуста."
@@ -164,7 +172,7 @@ async def handle_inline_query(query: InlineQuery) -> None:
             title="🏆 ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА",
             description="Посмотреть таблицу лидеров",
             input_message_content=InputTextMessageContent(
-                message_text=text,
+                message_text=lb_text,
                 parse_mode="HTML",
             ),
         )
@@ -173,9 +181,10 @@ async def handle_inline_query(query: InlineQuery) -> None:
             cache_time=0,
             is_personal=True,
         )
-        return
+        return  # ← прерываем, НЕ идём в API за картинками
 
-    # ── Обычный инлайн-запрос ──────────────────────────────
+    # Шаг 3: else — обычный инлайн-запрос (теги, фото, гифки)
+    creator_id = query.from_user.id
     tag = config.validate_tag(query.query)
     logger.info("Inline-запрос от %s: тег='%s'", creator_id, tag)
 
