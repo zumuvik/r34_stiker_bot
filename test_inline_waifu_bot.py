@@ -152,7 +152,7 @@ class TestFetchNsfwImage:
         # Проверяем, что тег ушёл в запрос
         session.get.assert_called_once_with(
             bot.WAIFU_API_URL,
-            params={"is_nsfw": "true", "included_tags": "maid"},
+            params={"IsNsfw": "True", "IncludedTags": "maid"},
         )
 
     # -- HTTP-ошибки -------------------------------------------
@@ -233,7 +233,7 @@ class TestFetchNsfwImage:
 
         session.get.assert_called_once_with(
             bot.WAIFU_API_URL,
-            params={"is_nsfw": "true"},
+            params={"IsNsfw": "True"},
         )
 
     @pytest.mark.asyncio
@@ -245,7 +245,7 @@ class TestFetchNsfwImage:
 
         session.get.assert_called_once_with(
             bot.WAIFU_API_URL,
-            params={"is_nsfw": "true"},
+            params={"IsNsfw": "True"},
         )
 
 
@@ -417,7 +417,7 @@ class TestHandleMoreCallback:
 
         session.get.assert_called_once_with(
             bot.WAIFU_API_URL,
-            params={"is_nsfw": "true", "included_tags": "maid"},
+            params={"IsNsfw": "True", "IncludedTags": "maid"},
         )
 
     @pytest.mark.asyncio
@@ -429,7 +429,7 @@ class TestHandleMoreCallback:
 
         session.get.assert_called_once_with(
             bot.WAIFU_API_URL,
-            params={"is_nsfw": "true"},
+            params={"IsNsfw": "True"},
         )
 
     # -- inline_message_id path (бот вызван через инлайн) ------

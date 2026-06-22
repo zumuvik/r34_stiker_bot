@@ -99,14 +99,18 @@ async def fetch_nsfw_image(tag: str | None = None) -> str:
     Returns:
         Прямой URL изображения (строка) или ``FALLBACK_IMAGE_URL``.
     """
-    params: dict[str, str] = {"is_nsfw": "true"}
+    # Внимание: API чувствителен к регистру — параметры PascalCase!
+    params: dict[str, str] = {"IsNsfw": "True"}
     if tag:
-        params["included_tags"] = tag
+        params["IncludedTags"] = tag
 
     timeout = aiohttp.ClientTimeout(total=API_TIMEOUT_SECONDS)
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            headers={"Accept-Version": "v7"},
+        ) as session:
             async with session.get(WAIFU_API_URL, params=params) as response:
                 # Проверка HTTP-статуса
                 if response.status != 200:
