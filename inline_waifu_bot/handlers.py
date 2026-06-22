@@ -7,6 +7,7 @@
 Поддерживаются фото (Waifu.im) и видео (Reddit).
 """
 
+import asyncio
 import logging
 import secrets
 import time
@@ -28,6 +29,7 @@ from aiogram.types import (
 
 from .api import fetch_nsfw_content
 from . import config
+from . import database
 from .core import bot, dp
 from .keyboard import build_markup
 
@@ -77,6 +79,37 @@ async def _edit_message(
         )
 
 
+# ─────────────────── Хелпер: генерация статистики ───────────────────
+
+
+async def _generate_stats(user_id: int, username: str | None) -> str:
+    """
+    Генерирует случайное изменение спермы (+/- 1-50), обновляет БД
+    и возвращает строку формата::
+
+        {фраза} | {✅/❌} | {+/-X мл спермы}
+    """
+    delta = secrets.randbelow(50) + 1          # 1–50
+    is_positive = secrets.randbelow(2) == 0     # 50/50
+
+    if is_positive:
+        phrase = secrets.choice(config.POSITIVE_PHRASES)
+        sign = "✅"
+        delta_str = f"+{delta}"
+    else:
+        phrase = secrets.choice(config.NEGATIVE_PHRASES)
+        sign = "❌"
+        delta_str = f"-{delta}"
+        delta = -delta                          # физический дельта для БД
+
+    # Обновляем БД в пуле потоков (SQLite — синхронный).
+    await asyncio.to_thread(
+        database.update_user_sperm, user_id, username or "", delta,
+    )
+
+    return f"{phrase} | {sign} | {delta_str} мл спермы"
+
+
 # ─────────────────── Inline Query Handler ───────────────────
 
 
@@ -89,6 +122,41 @@ async def handle_inline_query(query: InlineQuery) -> None:
     верификации. В callback_data зашит ``creator_id``.
     """
     creator_id = query.from_user.id
+    raw_query = query.query.strip().lower()
+
+    # ── Лидерборд по запросу "top" / "stats" ───────────────
+    if raw_query in ("top", "stats"):
+        logger.info("Лидерборд от %s", creator_id)
+        top_users = await asyncio.to_thread(database.get_leaderboard)
+
+        if not top_users:
+            text = "🏆 <b>Топ дрочеров</b>\n\nПока никого нет. Начни дрочить первым! 🔞"
+        else:
+            lines = ["🏆 <b>Топ дрочеров</b>\n\n"]
+            for i, u in enumerate(top_users, 1):
+                name = u["username"] or f"User #{u['user_id']}"
+                sperm = u["total_sperm"]
+                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+                lines.append(f"{medal} <b>{name}</b> — {sperm} мл спермы")
+            text = "\n".join(lines)
+
+        article = InlineQueryResultArticle(
+            id=secrets.token_hex(8),
+            title="🏆 Топ дрочеров",
+            description="Посмотреть таблицу лидеров",
+            input_message_content=InputTextMessageContent(
+                message_text=text,
+                parse_mode="HTML",
+            ),
+        )
+        await query.answer(
+            results=[article],
+            cache_time=0,
+            is_personal=True,
+        )
+        return
+
+    # ── Обычный инлайн-запрос ──────────────────────────────
     tag = config.validate_tag(query.query)
     logger.info("Inline-запрос от %s: тег='%s'", creator_id, tag)
 
@@ -171,8 +239,11 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
 
     await callback.answer()
 
+    # Статистика генерируется ДО редактирования (один редактив с полным caption).
+    stats_line = await _generate_stats(creator_id, callback.from_user.username)
+
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
-    caption = f"<b>NSFW Anime</b>\nТег: {display_tag}"
+    caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
     media_obj = _build_media(media_url, media_type, caption)
 
     try:
@@ -186,7 +257,8 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
             media=config.FALLBACK_IMAGE_URL,
             caption=(
                 f"<b>NSFW Anime</b> (фолбэк)\n"
-                f"Тег: {display_tag}"
+                f"Тег: {display_tag}\n"
+                f"{stats_line}"
             ),
         )
         await _edit_message(callback, fallback, build_markup(tag, creator_id))
@@ -252,8 +324,10 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         clicker_id, tag,
     )
 
+    stats_line = await _generate_stats(clicker_id, callback.from_user.username)
+
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
-    caption = f"<b>NSFW Anime</b>\nТег: {display_tag}"
+    caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
     media_obj = _build_media(media_url, media_type, caption)
 
     try:
@@ -268,7 +342,8 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
             media=config.FALLBACK_IMAGE_URL,
             caption=(
                 f"<b>NSFW Anime</b> (фолбэк)\n"
-                f"Тег: {display_tag}"
+                f"Тег: {display_tag}\n"
+                f"{stats_line}"
             ),
             has_spoiler=True,
         )

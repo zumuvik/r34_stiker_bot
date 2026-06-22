@@ -8,3 +8,4 @@ build/
 .venv/
 venv/
 bot.log
+bot_stats.db

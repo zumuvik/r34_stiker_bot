@@ -24,7 +24,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-# ── Порядок импорта важен: core → config/api/keyboard → handlers → app ──
+# ── Порядок импорта важен: core → config/api/database/keyboard → handlers → app ──
 from .core import bot, dp  # noqa: F401, E402
 from .config import (  # noqa: F401, E402
     BOT_TOKEN,
@@ -32,6 +32,8 @@ from .config import (  # noqa: F401, E402
     FALLBACK_IMAGE_URL,
     API_TIMEOUT_SECONDS,
     BUTTON_COOLDOWN,
+    POSITIVE_PHRASES,
+    NEGATIVE_PHRASES,
     VALID_TAGS,
     PHOTO_TAGS,
     VIDEO_TAGS,
@@ -43,6 +45,12 @@ from .config import (  # noqa: F401, E402
 )
 from .api import fetch_nsfw_content  # noqa: F401, E402
 from .keyboard import build_markup  # noqa: F401, E402
+from .database import (  # noqa: F401, E402
+    init_db,
+    update_user_sperm,
+    get_leaderboard,
+    get_connection,
+)
 
 # Регистрация хэндлеров на dp (выполняется в момент импорта).
 from . import handlers  # noqa: F401, E402

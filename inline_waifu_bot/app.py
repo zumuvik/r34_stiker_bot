@@ -10,12 +10,14 @@ from .core import bot, dp
 
 # Импорт регистрирует хэндлеры на dp.
 from . import handlers  # noqa: F401
+from . import database
 
 logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
     """Запускает поллинг бота."""
+    database.init_db()
     logger.info("Бот запущен. Ожидание инлайн-запросов...")
     await dp.start_polling(bot)
 

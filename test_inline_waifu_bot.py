@@ -12,6 +12,7 @@ import os
 os.environ["BOT_TOKEN"] = "123456:test_fake_token_abc"
 
 import asyncio
+import sqlite3
 import time
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -506,6 +507,12 @@ class TestHandleVerifyCallback:
     CREATOR_ID = 12345
     STRANGER_ID = 99999
 
+    @pytest.fixture(autouse=True)
+    def _patch_db(self):
+        """Старые тесты не тестируют статистику — мокаем запись в БД."""
+        with patch("inline_waifu_bot.handlers.database.update_user_sperm"):
+            yield
+
     @pytest.fixture
     def mock_bot_edit(self):
         """Патч bot.edit_message_media для тестов инлайн-пути."""
@@ -707,6 +714,12 @@ class TestHandleMoreCallback:
     def clear_cooldowns(self):
         """Сбрасываем кд перед каждым тестом."""
         bot._cooldowns.clear()
+
+    @pytest.fixture(autouse=True)
+    def _patch_db(self):
+        """Старые тесты не тестируют статистику — мокаем запись в БД."""
+        with patch("inline_waifu_bot.handlers.database.update_user_sperm"):
+            yield
 
     @pytest.fixture
     def mock_bot_edit(self):
@@ -1078,3 +1091,390 @@ class TestModuleConfig:
 
     def test_get_video_endpoint_unknown_tag_returns_tag_itself(self):
         assert bot.get_video_endpoint("unknown") == "unknown"
+
+
+# ─────────────────────────────────────────────────
+#  Database: init_db, update_user_sperm, get_leaderboard
+# ─────────────────────────────────────────────────
+
+
+class TestDatabase:
+    """Проверяет SQLite-слой: инициализацию, обновление/чтение статистики.
+
+    Использует in-memory SQLite (не затрагивает bot_stats.db на диске).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _in_memory_db(self):
+        """Подменяем database.get_connection на in-memory БД для каждого теста."""
+        import inline_waifu_bot.database as db_mod
+
+        orig_db_conn = db_mod.get_connection   # database.get_connection
+        orig_bot_conn = bot.get_connection      # inline_waifu_bot.get_connection (экспорт)
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        db_mod.get_connection = lambda: conn
+        bot.get_connection = lambda: conn       # тоже патчим, т.к. это копия ссылки
+        db_mod.init_db()                        # создаёт таблицы в :memory:
+        yield
+        db_mod.get_connection = orig_db_conn
+        bot.get_connection = orig_bot_conn
+        conn.close()
+
+    def test_init_db_creates_table(self):
+        """После init_db таблица существует."""
+        conn = bot.get_connection()
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'",
+        ).fetchall()
+        assert any(r["name"] == "user_stats" for r in tables)
+
+    def test_update_new_user_inserts_row(self):
+        """Первый вызов update_user_sperm создаёт запись."""
+        bot.update_user_sperm(123, "test_user", 10)
+        conn = bot.get_connection()
+        row = conn.execute(
+            "SELECT * FROM user_stats WHERE user_id=?", (123,),
+        ).fetchone()
+        assert row is not None
+        assert row["username"] == "test_user"
+        assert row["total_sperm"] == 10
+
+    def test_update_existing_user_accumulates(self):
+        """Последующие вызовы накапливают total_sperm."""
+        bot.update_user_sperm(123, "test_user", 10)
+        bot.update_user_sperm(123, "test_user", -3)
+        conn = bot.get_connection()
+        row = conn.execute(
+            "SELECT total_sperm FROM user_stats WHERE user_id=?", (123,),
+        ).fetchone()
+        assert row["total_sperm"] == 7
+
+    def test_update_refreshes_username(self):
+        """username обновляется при повторном вызове."""
+        bot.update_user_sperm(123, "old_name", 10)
+        bot.update_user_sperm(123, "new_name", 5)
+        conn = bot.get_connection()
+        row = conn.execute(
+            "SELECT username FROM user_stats WHERE user_id=?", (123,),
+        ).fetchone()
+        assert row["username"] == "new_name"
+
+    def test_get_leaderboard_empty(self):
+        """Когда нет записей — пустой список."""
+        assert bot.get_leaderboard() == []
+
+    def test_get_leaderboard_ordering(self):
+        """Топ сортируется по total_sperm DESC."""
+        bot.update_user_sperm(1, "alpha", 10)
+        bot.update_user_sperm(2, "beta", 30)
+        bot.update_user_sperm(3, "gamma", 20)
+        top = bot.get_leaderboard(10)
+        assert len(top) == 3
+        assert top[0]["user_id"] == 2  # beta: 30
+        assert top[1]["user_id"] == 3  # gamma: 20
+        assert top[2]["user_id"] == 1  # alpha: 10
+        assert [u["total_sperm"] for u in top] == [30, 20, 10]
+
+    def test_get_leaderboard_limited(self):
+        """Параметр limit работает."""
+        for uid in range(1, 6):
+            bot.update_user_sperm(uid, f"u{uid}", uid * 10)
+        top3 = bot.get_leaderboard(3)
+        assert len(top3) == 3
+        assert top3[0]["total_sperm"] == 50
+        assert top3[-1]["total_sperm"] == 30
+
+    def test_negative_sperm_allowed(self):
+        """total_sperm может уходить в минус."""
+        bot.update_user_sperm(1, "unlucky", -100)
+        conn = bot.get_connection()
+        row = conn.execute(
+            "SELECT total_sperm FROM user_stats WHERE user_id=?", (1,),
+        ).fetchone()
+        assert row["total_sperm"] == -100
+
+
+# ─────────────────────────────────────────────────
+#  Stats line в verify_callback
+# ─────────────────────────────────────────────────
+
+
+class TestStatsInVerifyCallback:
+    """Статистика дописывается в caption при верификации."""
+
+    SUCCESS_URL = "https://cdn.waifu.im/verify_stats.jpg"
+    SUCCESS_JSON = {
+        "items": [{"url": SUCCESS_URL, "tags": [{"slug": "waifu"}]}],
+    }
+    CREATOR_ID = 12345
+
+    @pytest.fixture
+    def mock_bot_edit(self):
+        with patch.object(bot.bot, "edit_message_media", AsyncMock()) as m:
+            yield m
+
+    def _make_callback(self, tag="maid", *, clicker_id=None):
+        tag_part = tag or "random"
+        cb = AsyncMock(spec=CallbackQuery)
+        cb.data = f"verify_18:{self.CREATOR_ID}:{tag_part}"
+        cb.from_user = MagicMock()
+        cb.from_user.id = clicker_id or self.CREATOR_ID
+        cb.from_user.username = "test_user"
+        cb.inline_message_id = "AQAAABBBCCCDDD"
+        cb.message = None
+        cb.answer = AsyncMock()
+        return cb
+
+    @pytest.mark.asyncio
+    async def test_caption_includes_stats_line(self, mock_bot_edit):
+        """После верификации caption заканчивается строкой статистики."""
+        cb = self._make_callback("waifu")
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("secrets.randbelow", side_effect=[10, 0]),  # delta=11, positive
+            patch("secrets.choice", return_value="Вы подододрочель"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_verify_callback(cb)
+
+        _args, kwargs = mock_bot_edit.call_args
+        caption = kwargs["media"].caption
+        assert "Вы подододрочель" in caption
+        assert "✅" in caption
+        assert "+11 мл спермы" in caption
+
+    @pytest.mark.asyncio
+    async def test_negative_stats_format(self, mock_bot_edit):
+        """Отрицательная сперма: ❌ и -N."""
+        cb = self._make_callback("ero")
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("secrets.randbelow", side_effect=[5, 1]),  # delta=6, negative
+            patch("secrets.choice", return_value="У тебя сегодня отсох хуец."),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_verify_callback(cb)
+
+        _args, kwargs = mock_bot_edit.call_args
+        caption = kwargs["media"].caption
+        assert "У тебя сегодня отсох хуец." in caption
+        assert "❌" in caption
+        assert "-6 мл спермы" in caption
+
+    @pytest.mark.asyncio
+    async def test_delta_calls_db(self, mock_bot_edit):
+        """update_user_sperm вызывается с корректными аргументами."""
+        cb = self._make_callback("maid")
+        with patch("inline_waifu_bot.handlers.database.update_user_sperm") as mock_upd:
+            with (
+                patch("secrets.randbelow", return_value=0),   # delta=1, positive
+                patch("secrets.choice", return_value="Вы подододрочель"),
+            ):
+                with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                    await bot.handle_verify_callback(cb)
+
+        # sync-функция, вызвана через asyncio.to_thread
+        mock_upd.assert_called_once_with(12345, "test_user", 1)
+
+    @pytest.mark.asyncio
+    async def test_fallback_also_has_stats(self, mock_bot_edit):
+        """При фолбэке статистика тоже есть в caption."""
+        cb = self._make_callback("neko_gif")
+        mock_bot_edit.side_effect = [
+            TelegramBadRequest(method="edit_message_media", message="wrong type"),
+            None,
+        ]
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("secrets.randbelow", side_effect=[3, 0]),
+            patch("secrets.choice", return_value="Вы подододрочель"),
+        ):
+            with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
+                await bot.handle_verify_callback(cb)
+
+        second_call = mock_bot_edit.call_args_list[1]
+        caption = second_call.kwargs["media"].caption
+        assert "Вы подододрочель" in caption
+        assert "✅" in caption
+        assert "+4 мл спермы" in caption  # randbelow(50)=3 → delta=4
+
+
+# ─────────────────────────────────────────────────
+#  Stats line в more_callback
+# ─────────────────────────────────────────────────
+
+
+class TestStatsInMoreCallback:
+    """Статистика дописывается в caption при «Давай ещё!»."""
+
+    SUCCESS_URL = "https://cdn.waifu.im/more_stats.jpg"
+    SUCCESS_JSON = {
+        "items": [{"url": SUCCESS_URL, "tags": [{"slug": "waifu"}]}],
+    }
+    OWNER_ID = 12345
+
+    @pytest.fixture(autouse=True)
+    def clear_cooldowns(self):
+        bot._cooldowns.clear()
+
+    @pytest.fixture
+    def mock_bot_edit(self):
+        with patch.object(bot.bot, "edit_message_media", AsyncMock()) as m:
+            yield m
+
+    def _make_callback(self, tag="maid", *, clicker_id=None):
+        tag_part = tag or "random"
+        cb = AsyncMock(spec=CallbackQuery)
+        cb.data = f"more:{self.OWNER_ID}:{tag_part}"
+        cb.from_user = MagicMock()
+        cb.from_user.id = clicker_id or self.OWNER_ID
+        cb.from_user.username = "test_user"
+        cb.inline_message_id = "AQAAABBBCCCDDD"
+        cb.message = None
+        cb.answer = AsyncMock()
+        return cb
+
+    @pytest.mark.asyncio
+    async def test_caption_includes_stats_line(self, mock_bot_edit):
+        cb = self._make_callback("maid")
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("secrets.randbelow", side_effect=[7, 0]),
+            patch("secrets.choice", return_value="Вы выдрочили яца"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_more_callback(cb)
+
+        _args, kwargs = mock_bot_edit.call_args
+        caption = kwargs["media"].caption
+        assert "Вы выдрочили яца" in caption
+        assert "✅" in caption
+        assert "+8 мл спермы" in caption
+
+    @pytest.mark.asyncio
+    async def test_more_fallback_has_stats(self, mock_bot_edit):
+        cb = self._make_callback("neko_gif")
+        mock_bot_edit.side_effect = [
+            TelegramBadRequest(method="edit_message_media", message="wrong type"),
+            None,
+        ]
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("secrets.randbelow", side_effect=[2, 1]),
+            patch("secrets.choice", return_value="У вас отвалился хуй"),
+        ):
+            with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
+                await bot.handle_more_callback(cb)
+
+        second_call = mock_bot_edit.call_args_list[1]
+        caption = second_call.kwargs["media"].caption
+        assert "У вас отвалился хуй" in caption
+        assert "❌" in caption
+        assert "-3 мл спермы" in caption
+
+
+# ─────────────────────────────────────────────────
+#  Leaderboard inline query (top / stats)
+# ─────────────────────────────────────────────────
+
+
+class TestLeaderboardInlineQuery:
+    """Проверяем, что 'top'/'stats' возвращает лидерборд, а не NSFW."""
+
+    @pytest.fixture
+    def mock_leaderboard(self):
+        """Подменяем database.get_leaderboard на контролируемые данные."""
+        data = [
+            {"user_id": 1, "username": "alpha", "total_sperm": 100},
+            {"user_id": 2, "username": "beta", "total_sperm": 50},
+            {"user_id": 3, "username": "", "total_sperm": 10},
+        ]
+        with patch(
+            "inline_waifu_bot.handlers.database.get_leaderboard",
+            return_value=data,
+        ) as m:
+            yield m
+
+    def _make_query(self, text: str) -> AsyncMock:
+        query = AsyncMock(spec=InlineQuery)
+        query.query = text
+        query.from_user = MagicMock()
+        query.from_user.id = 999
+        query.answer = AsyncMock()
+        return query
+
+    @pytest.mark.asyncio
+    async def test_returns_article_for_top(self, mock_leaderboard):
+        query = self._make_query("top")
+        await bot.handle_inline_query(query)
+        query.answer.assert_awaited_once()
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert isinstance(result, InlineQueryResultArticle)
+
+    @pytest.mark.asyncio
+    async def test_returns_article_for_stats(self, mock_leaderboard):
+        query = self._make_query("stats")
+        await bot.handle_inline_query(query)
+        query.answer.assert_awaited_once()
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert isinstance(result, InlineQueryResultArticle)
+
+    @pytest.mark.asyncio
+    async def test_leaderboard_content(self, mock_leaderboard):
+        query = self._make_query("top")
+        await bot.handle_inline_query(query)
+        _args, kwargs = query.answer.call_args
+        text = kwargs["results"][0].input_message_content.message_text
+        assert "🏆" in text
+        assert "Топ дрочеров" in text
+        assert "🥇 alpha" in text or "alpha" in text
+        assert "🥈 beta" in text or "beta" in text
+        assert "User #3" in text  # пустой username → User #ID
+        assert "100 мл спермы" in text
+        assert "50 мл спермы" in text
+
+    @pytest.mark.asyncio
+    async def test_leaderboard_empty(self):
+        query = self._make_query("top")
+        with patch(
+            "inline_waifu_bot.handlers.database.get_leaderboard",
+            return_value=[],
+        ):
+            await bot.handle_inline_query(query)
+        _args, kwargs = query.answer.call_args
+        text = kwargs["results"][0].input_message_content.message_text
+        assert "Пока никого нет" in text
+
+    @pytest.mark.asyncio
+    async def test_top_case_insensitive(self, mock_leaderboard):
+        query = self._make_query("TOP")
+        await bot.handle_inline_query(query)
+        query.answer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_stats_with_whitespace(self, mock_leaderboard):
+        query = self._make_query("  stats  ")
+        await bot.handle_inline_query(query)
+        query.answer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_normal_tag_unaffected_by_leaderboard(self):
+        """Обычный тег не задевает логику лидерборда."""
+        query = self._make_query("maid")
+        await bot.handle_inline_query(query)
+        query.answer.assert_awaited_once()
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert "verify_18" in result.reply_markup.inline_keyboard[0][0].callback_data
+        assert result.title == "🔞 Подрочить на maid"
+
+    @pytest.mark.asyncio
+    async def test_cache_time_zero_for_leaderboard(self, mock_leaderboard):
+        query = self._make_query("top")
+        await bot.handle_inline_query(query)
+        _args, kwargs = query.answer.call_args
+        assert kwargs["cache_time"] == 0
+        assert kwargs["is_personal"] is True
