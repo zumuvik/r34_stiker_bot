@@ -48,13 +48,8 @@ if not BOT_TOKEN:
 WAIFU_API_URL: str = "https://api.waifu.im/images"
 """Базовый эндпоинт Waifu.im API."""
 
-FALLBACK_IMAGE_URL: str = (
-    "https://placehold.co/512x512/1a1a2e/ffffff?text=NSFW+Error"
-    """
-    Изображение-заглушка на случай, если Waifu.im API недоступен
-    или вернул некорректный ответ.
-    """
-)
+FALLBACK_IMAGE_URL: str = "https://placehold.co/512x512/1a1a2e/ffffff?text=NSFW+Error"
+# Заглушка на случай недоступности Waifu.im API или ошибочного ответа.
 
 API_TIMEOUT_SECONDS: int = 5
 """Таймаут HTTP-запроса к Waifu.im API (в секундах)."""
