@@ -238,8 +238,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
 
     1. Извлекает тег из ``callback.data`` (формат: ``more_{tag}``).
     2. Запрашивает новое изображение у Waifu.im API.
-    3. Редактирует медиа-контент в том же сообщении через
-       ``callback.message.edit_media()``.
+    3. Редактирует медиа-контент в том же сообщении.
     4. Сохраняет ту же клавиатуру (с актуальным тегом).
     """
     # Разбор callback_data
@@ -264,12 +263,19 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     )
 
     try:
-        # edit_media поддерживает как обычные сообщения, так и те,
-        # что были отправлены через инлайн-режим.
-        await callback.message.edit_media(
-            media=media,
-            reply_markup=build_markup(tag),
-        )
+        # Для сообщений, отправленных через инлайн-режим, callback.message
+        # приходит None, а идентификатор хранится в inline_message_id.
+        if callback.inline_message_id:
+            await bot.edit_message_media(
+                inline_message_id=callback.inline_message_id,
+                media=media,
+                reply_markup=build_markup(tag),
+            )
+        else:
+            await callback.message.edit_media(
+                media=media,
+                reply_markup=build_markup(tag),
+            )
         await callback.answer()  # Закрываем состояние загрузки на кнопке
     except Exception as exc:
         logger.error("Не удалось отредактировать сообщение: %s", exc)
