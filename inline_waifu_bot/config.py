@@ -69,18 +69,17 @@ PHOTO_TAGS: frozenset[str] = frozenset({
     "raiden-shogun",
 })
 
-# Теги видео (источник: Reddit).
-# Названия подобраны так, чтобы интуитивно сообщать пользователю
-# о типе контента (hentai_video — хентай-видео, amv — аниме-клип).
+# Теги анимаций/GIF (источник: Purrbot API).
+# NOTE: Reddit заблокирован на стороне хостинга (403), поэтому видео
+# заменены на NSFW GIF из Purrbot API.
 VIDEO_TAGS: frozenset[str] = frozenset({
-    "hentai_video", "nsfw_video", "amv",
+    "neko_gif", "nsfw_gif",
 })
 
-# Маппинг видео-тегов в сабреддиты для запроса.
-VIDEO_SUBREDDITS: dict[str, str] = {
-    "hentai_video": "hentai_videos",
-    "nsfw_video": "nsfw_videos",
-    "amv": "amv",
+# Маппинг видео-тегов в эндпоинты Purrbot.
+VIDEO_ENDPOINTS: dict[str, str] = {
+    "neko_gif":   "v2/img/nsfw/neko/gif",
+    "nsfw_gif":   "v2/img/nsfw/neko/gif",
 }
 
 # Объединённое множество (для валидации).
@@ -118,6 +117,6 @@ def is_photo_tag(tag: str | None) -> bool:
     return tag in PHOTO_TAGS
 
 
-def get_subreddit(tag: str) -> str:
-    """Возвращает сабреддит для видео-тега. Если тег не найден — возвращает сам тег."""
-    return VIDEO_SUBREDDITS.get(tag, tag)
+def get_video_endpoint(tag: str) -> str:
+    """Возвращает эндпоинт Purrbot для видео-тега. Если тег не найден — возвращает сам тег."""
+    return VIDEO_ENDPOINTS.get(tag, tag)
