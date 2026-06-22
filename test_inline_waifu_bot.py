@@ -391,7 +391,7 @@ class TestHandleInlineQuery:
         result = kwargs["results"][0]
         text = result.input_message_content.message_text
         assert "ТОП-10" in text
-        assert "статистика" in text
+        assert "статистика" not in text  # статистика отдельно, не в топе
 
     # ── Reply markup (кнопка верификации) ───────────────────
 
@@ -1557,8 +1557,8 @@ class TestLeaderboardInlineQuery:
         assert "User #3" in text  # пустой username → User #ID
         assert "100 мл спермы" in text
         assert "50 мл спермы" in text
-        # Пустая история
-        assert "Ты ещё не дрочил" in text
+        # Личной статистики в топе нет
+        assert "Ты ещё не дрочил" not in text
 
     @pytest.mark.asyncio
     async def test_leaderboard_empty(self):
@@ -1609,39 +1609,34 @@ class TestLeaderboardInlineQuery:
 
     @pytest.mark.asyncio
     async def test_personal_stats_shown_with_tags(self):
-        """Если есть теги, показываются излюбленные."""
-        query = self._make_query("top")
+        """Статистика с тегами по запросу 'stats'."""
+        query = self._make_query("stats")
         with patch(
-            "inline_waifu_bot.handlers.database.get_leaderboard",
-            return_value=[{"user_id": 1, "username": "alpha", "total_sperm": 100}],
+            "inline_waifu_bot.handlers.database.get_user_favorite_tags",
+            return_value=[
+                {"tag": "waifu", "count": 5},
+                {"tag": "maid", "count": 3},
+            ],
         ):
-            with patch(
-                "inline_waifu_bot.handlers.database.get_user_favorite_tags",
-                return_value=[
-                    {"tag": "waifu", "count": 5},
-                    {"tag": "maid", "count": 3},
-                ],
-            ):
-                await bot.handle_inline_query(query)
+            await bot.handle_inline_query(query)
         _args, kwargs = query.answer.call_args
         text = kwargs["results"][0].input_message_content.message_text
         assert "waifu (5 раз)" in text
         assert "maid (3 раз)" in text
-        assert "Твои излюбленные теги" in text
+        assert "Излюбленные теги:" in text
+        # Топа в статистике нет
+        assert "ТОП-10" not in text
 
     @pytest.mark.asyncio
     async def test_personal_stats_empty_when_no_history(self):
-        """Если истории нет — соответствующее сообщение."""
-        query = self._make_query("top")
+        """Статистика пуста, если истории нет."""
+        query = self._make_query("stats")
         with patch(
-            "inline_waifu_bot.handlers.database.get_leaderboard",
-            return_value=[{"user_id": 1, "username": "alpha", "total_sperm": 100}],
+            "inline_waifu_bot.handlers.database.get_user_favorite_tags",
+            return_value=[],
         ):
-            with patch(
-                "inline_waifu_bot.handlers.database.get_user_favorite_tags",
-                return_value=[],
-            ):
-                await bot.handle_inline_query(query)
+            await bot.handle_inline_query(query)
         _args, kwargs = query.answer.call_args
         text = kwargs["results"][0].input_message_content.message_text
         assert "Ты ещё не дрочил, твоя история пуста" in text
+        assert "ТОП-10" not in text

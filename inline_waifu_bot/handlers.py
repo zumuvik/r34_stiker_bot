@@ -120,15 +120,19 @@ async def handle_inline_query(query: InlineQuery) -> None:
     Обрабатывает инлайн-запрос: ``@bot_username [тег]``.
 
     - Пустой запрос → лидерборд + список тегов.
-    - ``top`` / ``stats`` → только лидерборд.
+    - ``top`` → только лидерборд.
+    - ``stats`` → только личная статистика.
     - ``<тег>`` → только верификация для тега.
     """
     user_query = query.query.strip().lower()
     creator_id = query.from_user.id
 
-    # ── short-circuit: top / stats ──────────────────────────────
-    if user_query in ("top", "stats"):
+    # ── short-circuit: top → лидерборд, stats → личная статистика ──
+    if user_query == "top":
         await _answer_leaderboard(query, creator_id)
+        return
+    if user_query == "stats":
+        await _answer_stats(query, creator_id)
         return
 
     # ── Пустой запрос → лидерборд + все теги ───────────────────
@@ -176,45 +180,44 @@ def _make_verify_article(creator_id: int, tag_display: str) -> InlineQueryResult
     )
 
 
-async def _build_leaderboard_text(user_id: int) -> str:
-    """Формирует текст лидерборда + персональная статистика."""
+async def _build_leaderboard_text() -> str:
+    """Формирует текст лидерборда (только топ, без личной статистики)."""
     top_users = await asyncio.to_thread(database.get_leaderboard, 10)
-    fav_tags = await asyncio.to_thread(database.get_user_favorite_tags, user_id)
-
     if not top_users:
-        parts = [
+        return (
             "🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"
             "Пока никого нет. Начни дрочить первым! 🔞"
-        ]
-    else:
-        lines = ["🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"]
-        for i, u in enumerate(top_users, 1):
-            name = u["username"] or f"User #{u['user_id']}"
-            sperm = u["total_sperm"]
-            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-            lines.append(f"{medal} <b>{name}</b> — {sperm} мл спермы")
-        parts = ["\n".join(lines)]
+        )
 
+    lines = ["🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"]
+    for i, u in enumerate(top_users, 1):
+        name = u["username"] or f"User #{u['user_id']}"
+        sperm = u["total_sperm"]
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+        lines.append(f"{medal} <b>{name}</b> — {sperm} мл спермы")
+    return "\n".join(lines)
+
+
+async def _build_stats_text(user_id: int) -> str:
+    """Формирует текст личной статистики."""
+    fav_tags = await asyncio.to_thread(database.get_user_favorite_tags, user_id)
     if fav_tags:
-        tags_str = ", ".join(f"{t['tag']} ({t['count']} раз)" for t in fav_tags)
-        parts.append(
-            "\n\n------------------------\n"
-            "твоя статистика:\n"
-            f"📊 Твои излюбленные теги: {tags_str}"
+        tags_str = ", ".join(
+            f"{t['tag']} ({t['count']} раз)" for t in fav_tags
         )
-    else:
-        parts.append(
-            "\n\n------------------------\n"
-            "твоя статистика:\n"
-            "📊 Ты ещё не дрочил, твоя история пуста."
+        return (
+            "📊 <b>Твоя статистика</b>\n\n"
+            f"Излюбленные теги: {tags_str}"
         )
-
-    return "".join(parts)
+    return (
+        "📊 <b>Твоя статистика</b>\n\n"
+        "Ты ещё не дрочил, твоя история пуста."
+    )
 
 
 async def _answer_leaderboard(query: InlineQuery, user_id: int) -> None:
     """Отвечает только лидербордом (один результат)."""
-    text = await _build_leaderboard_text(user_id)
+    text = await _build_leaderboard_text()
     article = InlineQueryResultArticle(
         id=secrets.token_hex(8),
         title="🏆 ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА",
@@ -227,10 +230,25 @@ async def _answer_leaderboard(query: InlineQuery, user_id: int) -> None:
     await query.answer(results=[article], cache_time=0, is_personal=True)
 
 
+async def _answer_stats(query: InlineQuery, user_id: int) -> None:
+    """Отвечает только личной статистикой (один результат)."""
+    text = await _build_stats_text(user_id)
+    article = InlineQueryResultArticle(
+        id=secrets.token_hex(8),
+        title="📊 Твоя статистика",
+        description="Твои теги и активность",
+        input_message_content=InputTextMessageContent(
+            message_text=text,
+            parse_mode="HTML",
+        ),
+    )
+    await query.answer(results=[article], cache_time=0, is_personal=True)
+
+
 async def _answer_leaderboard_with_tags(query: InlineQuery, user_id: int) -> None:
     """Отвечает лидербордом + списком всех тегов."""
     # Лидерборд
-    text = await _build_leaderboard_text(user_id)
+    text = await _build_leaderboard_text()
     results: list[InlineQueryResultArticle] = [
         InlineQueryResultArticle(
             id=secrets.token_hex(8),
