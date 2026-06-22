@@ -64,7 +64,7 @@ VALID_TAGS: frozenset[str] = frozenset({
     "waifu", "maid", "ero", "hentai", "ass", "oppai",
     "milf", "oral", "paizuri", "ecchi", "selfies",
     "uniform", "marin-kitagawa", "mori-calliope",
-    "raiden-shogun",
+    "raiden-shogun", "furry",
 })
 
 
