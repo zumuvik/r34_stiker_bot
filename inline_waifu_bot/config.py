@@ -58,31 +58,66 @@ API_TIMEOUT_SECONDS: int = 5
 BUTTON_COOLDOWN: int = 3
 """КД между нажатиями кнопки «Давай ещё!» для одного пользователя (в секундах)."""
 
-# Допустимые теги, которые принимает бот.
+# ─────────────────── Теги ───────────────────
+
+# Теги картинок (источник: Waifu.im API).
 # Актуальный список: https://waifu.im/docs
-VALID_TAGS: frozenset[str] = frozenset({
+PHOTO_TAGS: frozenset[str] = frozenset({
     "waifu", "maid", "ero", "hentai", "ass", "oppai",
     "milf", "oral", "paizuri", "ecchi", "selfies",
     "uniform", "marin-kitagawa", "mori-calliope",
     "raiden-shogun",
 })
 
+# Теги видео (источник: Reddit).
+# Названия подобраны так, чтобы интуитивно сообщать пользователю
+# о типе контента (hentai_video — хентай-видео, amv — аниме-клип).
+VIDEO_TAGS: frozenset[str] = frozenset({
+    "hentai_video", "nsfw_video", "amv",
+})
 
-# ─────────────────── Валидация тегов ───────────────────
+# Маппинг видео-тегов в сабреддиты для запроса.
+VIDEO_SUBREDDITS: dict[str, str] = {
+    "hentai_video": "hentai_videos",
+    "nsfw_video": "nsfw_videos",
+    "amv": "amv",
+}
+
+# Объединённое множество (для валидации).
+VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS)
+
+
+# ─────────────────── Хелперы ───────────────────
 
 
 def validate_tag(raw: str) -> str | None:
     """
-    Валидирует пользовательский ввод как тег Waifu.im.
+    Валидирует пользовательский ввод.
 
     Приводит к нижнему регистру, удаляет лишние пробелы,
-    сверяет с множеством ``VALID_TAGS``.
-
-    Args:
-        raw: Строка, введённая пользователем после юзернейма бота.
+    сверяет с ``VALID_TAGS``.
 
     Returns:
         Нормализованный тег или ``None`` (если тег не поддерживается).
     """
     tag = raw.strip().lower()
     return tag if tag in VALID_TAGS else None
+
+
+def is_video_tag(tag: str | None) -> bool:
+    """Является ли тег видео-тегом (Reddit)."""
+    if tag is None:
+        return False
+    return tag in VIDEO_TAGS
+
+
+def is_photo_tag(tag: str | None) -> bool:
+    """Является ли тег фото-тегом (Waifu.im)."""
+    if tag is None:
+        return False
+    return tag in PHOTO_TAGS
+
+
+def get_subreddit(tag: str) -> str:
+    """Возвращает сабреддит для видео-тега. Если тег не найден — возвращает сам тег."""
+    return VIDEO_SUBREDDITS.get(tag, tag)

@@ -33,9 +33,15 @@ from .config import (  # noqa: F401, E402
     API_TIMEOUT_SECONDS,
     BUTTON_COOLDOWN,
     VALID_TAGS,
+    PHOTO_TAGS,
+    VIDEO_TAGS,
+    VIDEO_SUBREDDITS,
     validate_tag,
+    is_video_tag,
+    is_photo_tag,
+    get_subreddit,
 )
-from .api import fetch_nsfw_image  # noqa: F401, E402
+from .api import fetch_nsfw_content  # noqa: F401, E402
 from .keyboard import build_markup  # noqa: F401, E402
 
 # Регистрация хэндлеров на dp (выполняется в момент импорта).

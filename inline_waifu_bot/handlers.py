@@ -4,6 +4,7 @@
 Всё взаимодействие происходит в том же чате, где вызван инлайн.
 Никаких переходов в ЛС бота.
 Каждая кнопка проверяет, что нажал именно создатель инлайн-сообщения.
+Поддерживаются фото (Waifu.im) и видео (Reddit).
 """
 
 import logging
@@ -11,27 +12,69 @@ import secrets
 import time
 
 from aiogram import F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
-    InputTextMessageContent,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery,
     InputMediaPhoto,
+    InputMediaVideo,
+    InputTextMessageContent,
     Message,
 )
 
+from .api import fetch_nsfw_content
+from . import config
 from .core import bot, dp
-from .config import VALID_TAGS, BUTTON_COOLDOWN, validate_tag
-from .api import fetch_nsfw_image
 from .keyboard import build_markup
 
 logger = logging.getLogger(__name__)
 
 # Хранилище времени последнего нажатия кнопки для каждого пользователя.
 _cooldowns: dict[int, float] = {}
+
+
+# ─────────────────── Хелпер: создать InputMedia ───────────────────
+
+
+def _build_media(
+    media_url: str,
+    media_type: str,
+    caption: str,
+) -> InputMediaPhoto | InputMediaVideo:
+    """
+    Создаёт ``InputMediaPhoto`` или ``InputMediaVideo`` с has_spoiler=True.
+    """
+    cls = InputMediaVideo if media_type == "video" else InputMediaPhoto
+    return cls(media=media_url, caption=caption, has_spoiler=True)
+
+
+# ─────────────────── Хелпер: отредактировать сообщение ───────────────────
+
+
+async def _edit_message(
+    callback: CallbackQuery,
+    media: InputMediaPhoto | InputMediaVideo,
+    reply_markup: InlineKeyboardMarkup,
+) -> None:
+    """
+    Редактирует сообщение: через ``bot.edit_message_media`` если
+    ``inline_message_id`` есть, иначе через ``callback.message.edit_media``.
+    """
+    if callback.inline_message_id:
+        await bot.edit_message_media(
+            inline_message_id=callback.inline_message_id,
+            media=media,
+            reply_markup=reply_markup,
+        )
+    else:
+        await callback.message.edit_media(
+            media=media,
+            reply_markup=reply_markup,
+        )
 
 
 # ─────────────────── Inline Query Handler ───────────────────
@@ -43,11 +86,10 @@ async def handle_inline_query(query: InlineQuery) -> None:
     Обрабатывает инлайн-запрос: ``@bot_username [тег]``.
 
     Возвращает ``InlineQueryResultArticle`` — текст-заглушку с кнопкой
-    верификации. В callback_data кнопки зашит ``creator_id``, чтобы
-    позже проверить, что подтверждает 18+ именно автор инлайн-запроса.
+    верификации. В callback_data зашит ``creator_id``.
     """
     creator_id = query.from_user.id
-    tag = validate_tag(query.query)
+    tag = config.validate_tag(query.query)
     logger.info("Inline-запрос от %s: тег='%s'", creator_id, tag)
 
     tag_display = tag or "random"
@@ -85,7 +127,7 @@ async def handle_inline_query(query: InlineQuery) -> None:
     )
 
 
-# ─────────────────── Callback: верификация 18+ → фото ───────────────────
+# ─────────────────── Callback: верификация 18+ → контент ───────────────────
 
 
 @dp.callback_query(F.data.startswith("verify_18:"))
@@ -93,9 +135,10 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     """
     Обрабатывает нажатие «Мне есть 18 лет ✅».
 
-    1. Парсит ``callback_data`` — формат ``verify_18:{creator_id}:{tag}``.
-    2. Проверяет, что нажал именно создатель инлайн-сообщения.
-    3. Заменяет текст-заглушку на NSFW-фото под спойлером.
+    1. Проверяет создателя.
+    2. Запрашивает контент (фото или видео).
+    3. Заменяет текст-заглушку на контент под спойлером.
+    4. При ошибке видео — фоллбэк на фото с котом.
     """
     payload = callback.data.removeprefix("verify_18:")
     try:
@@ -128,31 +171,29 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
 
     await callback.answer()
 
-    image_url = await fetch_nsfw_image(tag)
-
-    media = InputMediaPhoto(
-        media=image_url,
-        caption=(
-            f"<b>NSFW Anime</b>\n"
-            f"Тег: {tag_display}"
-        ),
-        has_spoiler=True,
-    )
+    media_url, media_type = await fetch_nsfw_content(tag)
+    caption = f"<b>NSFW Anime</b>\nТег: {tag_display}"
+    media_obj = _build_media(media_url, media_type, caption)
 
     try:
-        if callback.inline_message_id:
-            await bot.edit_message_media(
-                inline_message_id=callback.inline_message_id,
-                media=media,
-                reply_markup=build_markup(tag, creator_id),
-            )
-        else:
-            await callback.message.edit_media(
-                media=media,
-                reply_markup=build_markup(tag, creator_id),
-            )
+        await _edit_message(callback, media_obj, build_markup(tag, creator_id))
+    except TelegramBadRequest:
+        logger.warning(
+            "Media (type=%s) failed edit, falling back to cat photo",
+            media_type,
+        )
+        fallback = InputMediaPhoto(
+            media=config.FALLBACK_IMAGE_URL,
+            caption=(
+                f"<b>NSFW Anime</b> (фолбэк)\n"
+                f"Тег: {tag_display}"
+            ),
+        )
+        await _edit_message(callback, fallback, build_markup(tag, creator_id))
     except Exception as exc:
-        logger.error("Не удалось показать фото после верификации: %s", exc)
+        logger.error(
+            "Не удалось показать контент после верификации: %s", exc
+        )
 
 
 # ─────────────────── Callback: Давай ещё! ───────────────────
@@ -163,11 +204,10 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     """
     Обрабатывает нажатие на кнопку «🔥 Давай ещё!».
 
-    1. Парсит ``callback_data`` — формат ``more:{creator_id}:{tag}``.
-    2. Проверяет, что нажал именно создатель сообщения.
-    3. Проверяет кд (3 секунды между нажатиями).
-    4. Запрашивает новое изображение у Waifu.im API.
-    5. Редактирует медиа-контент в том же сообщении.
+    1. Проверяет создателя и кд.
+    2. Запрашивает новый контент.
+    3. Редактирует сообщение.
+    4. При ошибке видео — фоллбэк на фото с котом.
     """
     payload = callback.data.removeprefix("more:")
     try:
@@ -196,8 +236,8 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     # ── Проверка кд ──────────────────────────────────────
     now = time.time()
     last = _cooldowns.get(clicker_id, 0.0)
-    if now - last < BUTTON_COOLDOWN:
-        remaining = int(BUTTON_COOLDOWN - (now - last))
+    if now - last < config.BUTTON_COOLDOWN:
+        remaining = int(config.BUTTON_COOLDOWN - (now - last))
         logger.info("Кд у %s: осталось %dс", clicker_id, remaining)
         await callback.answer(
             f"⏳ Подожди {remaining} с перед следующим нажатием.",
@@ -212,29 +252,27 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         clicker_id, tag,
     )
 
-    image_url = await fetch_nsfw_image(tag)
-
-    media = InputMediaPhoto(
-        media=image_url,
-        caption=(
-            f"<b>NSFW Anime</b>\n"
-            f"Тег: {tag or 'random'}"
-        ),
-        has_spoiler=True,
-    )
+    media_url, media_type = await fetch_nsfw_content(tag)
+    caption = f"<b>NSFW Anime</b>\nТег: {tag or 'random'}"
+    media_obj = _build_media(media_url, media_type, caption)
 
     try:
-        if callback.inline_message_id:
-            await bot.edit_message_media(
-                inline_message_id=callback.inline_message_id,
-                media=media,
-                reply_markup=build_markup(tag, creator_id),
-            )
-        else:
-            await callback.message.edit_media(
-                media=media,
-                reply_markup=build_markup(tag, creator_id),
-            )
+        await _edit_message(callback, media_obj, build_markup(tag, creator_id))
+        await callback.answer()
+    except TelegramBadRequest:
+        logger.warning(
+            "Media (type=%s) failed edit, falling back to cat photo",
+            media_type,
+        )
+        fallback = InputMediaPhoto(
+            media=config.FALLBACK_IMAGE_URL,
+            caption=(
+                f"<b>NSFW Anime</b> (фолбэк)\n"
+                f"Тег: {tag or 'random'}"
+            ),
+            has_spoiler=True,
+        )
+        await _edit_message(callback, fallback, build_markup(tag, creator_id))
         await callback.answer()
     except Exception as exc:
         logger.error("Не удалось отредактировать сообщение: %s", exc)
@@ -252,7 +290,7 @@ async def handle_start(message: Message) -> None:
     """Отправляет список доступных тегов при /start."""
     tags_text = (
         "🏷 <b>Доступные теги</b>\n\n"
-        + "\n".join(f"• <code>{t}</code>" for t in sorted(VALID_TAGS))
+        + "\n".join(f"• <code>{t}</code>" for t in sorted(config.VALID_TAGS))
         + "\n\n"
         "Просто напиши <code>@Waifulinuxbot &lt;тег&gt;</code> в любом чате."
     )

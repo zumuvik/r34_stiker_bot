@@ -18,12 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
     InputMediaPhoto,
+    InputMediaVideo,
     InputTextMessageContent,
     Message,
 )
@@ -123,131 +125,194 @@ class TestBuildMarkup:
 
 
 # ─────────────────────────────────────────────────
-#  fetch_nsfw_image
+#  fetch_nsfw_content
 # ─────────────────────────────────────────────────
 
+# Типовые ответы Reddit для тестов
+_REDDIT_VIDEO_JSON = [
+    {
+        "data": {
+            "children": [
+                {
+                    "data": {
+                        "is_video": True,
+                        "media": {
+                            "reddit_video": {
+                                "fallback_url": (
+                                    "https://v.redd.it/test123/"
+                                    "DASH_480.mp4?source=fallback"
+                                ),
+                            },
+                        },
+                    },
+                },
+            ],
+        },
+    },
+]
 
-class TestFetchNsfwImage:
-    """Все сценарии работы с Waifu.im API."""
+_REDDIT_MP4_JSON = [
+    {
+        "data": {
+            "children": [
+                {
+                    "data": {
+                        "is_video": False,
+                        "url": "https://cdn.example.com/video.mp4",
+                    },
+                },
+            ],
+        },
+    },
+]
+
+_REDDIT_EMPTY_JSON = [{"data": {"children": []}}]
+
+
+class TestFetchNsfwContent:
+    """Все сценарии работы fetch_nsfw_content: Waifu.im и Reddit."""
 
     FALLBACK = bot.FALLBACK_IMAGE_URL
-    SUCCESS_URL = "https://cdn.waifu.im/test_123.jpg"
-    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL}]}
+    PHOTO_URL = "https://cdn.waifu.im/test_123.jpg"
+    VIDEO_URL = "https://v.redd.it/test123/DASH_480.mp4"
+    PHOTO_JSON = {"items": [{"url": PHOTO_URL}]}
     EMPTY_JSON = {"items": []}
 
-    # -- Успех -------------------------------------------------
+    # ── Photo: Waifu.im (успех) ──────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_success_no_tag(self):
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
-            url = await bot.fetch_nsfw_image()
+    async def test_photo_with_tag(self):
+        with _mock_aiohttp_get(json_data=self.PHOTO_JSON) as (resp, session):
+            url, mtype = await bot.fetch_nsfw_content("maid")
 
-        assert url == self.SUCCESS_URL
-
-    @pytest.mark.asyncio
-    async def test_success_with_tag(self):
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
-            url = await bot.fetch_nsfw_image("maid")
-
-        assert url == self.SUCCESS_URL
-        # Проверяем, что тег ушёл в запрос
+        assert url == self.PHOTO_URL
+        assert mtype == "photo"
         session.get.assert_called_once_with(
             bot.WAIFU_API_URL,
             params={"IsNsfw": "True", "IncludedTags": "maid"},
         )
 
-    # -- HTTP-ошибки -------------------------------------------
+    @pytest.mark.asyncio
+    async def test_photo_no_tag_passes_only_is_nsfw(self):
+        """При tag=None и выборе фото — только IsNsfw."""
+        with patch("secrets.randbelow", return_value=0):
+            with _mock_aiohttp_get(json_data=self.PHOTO_JSON) as (resp, session):
+                url, mtype = await bot.fetch_nsfw_content(None)
+
+        assert url == self.PHOTO_URL
+        assert mtype == "photo"
+        session.get.assert_called_once_with(
+            bot.WAIFU_API_URL,
+            params={"IsNsfw": "True"},
+        )
+
+    # ── Video: Reddit (успех) ────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_non_200_status(self):
-        with _mock_aiohttp_get(status=500, text_data="Internal Server Error"):
-            url = await bot.fetch_nsfw_image()
+    async def test_video_with_reddit_video_tag(self):
+        """Тег hentai_video → Reddit с reddit_video.fallback_url."""
+        with _mock_aiohttp_get(json_data=_REDDIT_VIDEO_JSON) as (resp, session):
+            url, mtype = await bot.fetch_nsfw_content("hentai_video")
+
+        assert url == self.VIDEO_URL
+        assert mtype == "video"
+
+    @pytest.mark.asyncio
+    async def test_video_with_direct_mp4(self):
+        """Пост с прямой .mp4 ссылкой."""
+        with _mock_aiohttp_get(json_data=_REDDIT_MP4_JSON) as (resp, session):
+            url, mtype = await bot.fetch_nsfw_content("nsfw_video")
+
+        assert url == "https://cdn.example.com/video.mp4"
+        assert mtype == "video"
+
+    @pytest.mark.asyncio
+    async def test_video_random_picks_reddit(self):
+        """При tag=None и выборе видео — идём в Reddit."""
+        with patch("secrets.randbelow", return_value=1):
+            with patch(
+                "secrets.choice", return_value="hentai_videos"
+            ):
+                with _mock_aiohttp_get(
+                    json_data=_REDDIT_VIDEO_JSON
+                ) as (resp, session):
+                    url, mtype = await bot.fetch_nsfw_content(None)
+
+        assert mtype == "video"
+
+    # ── HTTP-ошибки (фото) ───────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_photo_non_200(self):
+        with _mock_aiohttp_get(status=500, text_data="Error"):
+            url, mtype = await bot.fetch_nsfw_content("waifu")
 
         assert url == self.FALLBACK
+        assert mtype == "photo"
 
     @pytest.mark.asyncio
-    async def test_404_status(self):
-        with _mock_aiohttp_get(status=404, text_data="Not Found"):
-            url = await bot.fetch_nsfw_image()
-
-        assert url == self.FALLBACK
-
-    # -- Пустой ответ -----------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_empty_images_list(self):
+    async def test_photo_empty_list(self):
         with _mock_aiohttp_get(json_data=self.EMPTY_JSON):
-            url = await bot.fetch_nsfw_image()
+            url, mtype = await bot.fetch_nsfw_content("maid")
 
         assert url == self.FALLBACK
+        assert mtype == "photo"
+
+    # ── HTTP-ошибки (видео) → фоллбэк на фото ───────────────
 
     @pytest.mark.asyncio
-    async def test_missing_images_key(self):
-        with _mock_aiohttp_get(json_data={"error": "no images"}):
-            url = await bot.fetch_nsfw_image()
+    async def test_video_reddit_500_falls_back_to_photo(self):
+        with _mock_aiohttp_get(status=500, text_data="Server Error"):
+            url, mtype = await bot.fetch_nsfw_content("hentai_video")
 
         assert url == self.FALLBACK
-
-    # -- Сетевые ошибки ----------------------------------------
+        assert mtype == "photo"
 
     @pytest.mark.asyncio
-    async def test_timeout(self):
-        """Таймаут → fallback."""
+    async def test_video_reddit_empty_falls_back_to_photo(self):
+        with _mock_aiohttp_get(json_data=_REDDIT_EMPTY_JSON):
+            url, mtype = await bot.fetch_nsfw_content("amv")
+
+        assert url == self.FALLBACK
+        assert mtype == "photo"
+
+    # ── Сетевые ошибки (фото) ────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_photo_timeout(self):
         with _mock_aiohttp_get() as (resp, session):
             resp.json.side_effect = asyncio.TimeoutError
-
-            url = await bot.fetch_nsfw_image()
+            url, mtype = await bot.fetch_nsfw_content("maid")
 
         assert url == self.FALLBACK
+        assert mtype == "photo"
 
     @pytest.mark.asyncio
-    async def test_client_error(self):
+    async def test_photo_client_error(self):
         with _mock_aiohttp_get() as (resp, session):
-            resp.json.side_effect = aiohttp.ClientError("connection reset")
-
-            url = await bot.fetch_nsfw_image()
+            resp.json.side_effect = aiohttp.ClientError("reset")
+            url, mtype = await bot.fetch_nsfw_content("maid")
 
         assert url == self.FALLBACK
+        assert mtype == "photo"
 
-    # -- Кривые данные ----------------------------------------
+    # ── Кривые данные ───────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_malformed_json_not_a_dict(self):
+    async def test_photo_malformed_json(self):
         with _mock_aiohttp_get(json_data=["not", "a", "dict"]):
-            url = await bot.fetch_nsfw_image()
+            url, mtype = await bot.fetch_nsfw_content("waifu")
 
         assert url == self.FALLBACK
+        assert mtype == "photo"
 
     @pytest.mark.asyncio
-    async def test_image_missing_url_key(self):
+    async def test_photo_missing_url_key(self):
         with _mock_aiohttp_get(json_data={"items": [{"id": 1}]}):
-            url = await bot.fetch_nsfw_image()
+            url, mtype = await bot.fetch_nsfw_content("waifu")
 
         assert url == self.FALLBACK
-
-    # -- Параметры запроса ------------------------------------
-
-    @pytest.mark.asyncio
-    async def test_no_tag_passes_only_is_nsfw(self):
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
-            await bot.fetch_nsfw_image()
-
-        session.get.assert_called_once_with(
-            bot.WAIFU_API_URL,
-            params={"IsNsfw": "True"},
-        )
-
-    @pytest.mark.asyncio
-    async def test_empty_tag_passes_only_is_nsfw(self):
-        """Если тег пустая строка — он не None, но валидатор отсечёт.
-        Функция fetch_nsfw_image получает None из handle_inline_query."""
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
-            await bot.fetch_nsfw_image(None)
-
-        session.get.assert_called_once_with(
-            bot.WAIFU_API_URL,
-            params={"IsNsfw": "True"},
-        )
+        assert mtype == "photo"
 
 
 # ─────────────────────────────────────────────────
@@ -503,11 +568,12 @@ class TestHandleVerifyCallback:
 
     @pytest.mark.asyncio
     async def test_random_tag_passes_no_tag_to_api(self, mock_bot_edit):
-        """random → запрос без тега."""
+        """random → запрос без тега (Waifu.im)."""
         callback = self._make_callback(None)
 
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
-            await bot.handle_verify_callback(callback)
+        with patch("inline_waifu_bot.api.secrets.randbelow", return_value=0):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
+                await bot.handle_verify_callback(callback)
 
         session.get.assert_called_once_with(
             bot.WAIFU_API_URL,
@@ -587,6 +653,61 @@ class TestHandleVerifyCallback:
         assert kwargs["reply_markup"].inline_keyboard[0][
             0].callback_data == f"more:{self.CREATOR_ID}:maid"
 
+    # ── Video path ─────────────────────────────────────────
+
+    def _make_video_callback(
+        self, tag: str, *, has_message: bool = False,
+        clicker_id: int | None = None,
+    ) -> AsyncMock:
+        """Создаёт мок с видео-тегом."""
+        tag_part = tag
+        callback_data = f"verify_18:{self.CREATOR_ID}:{tag_part}"
+        callback = AsyncMock(spec=CallbackQuery)
+        callback.data = callback_data
+        clicker_id = clicker_id or self.CREATOR_ID
+        callback.from_user = MagicMock()
+        callback.from_user.id = clicker_id
+        callback.inline_message_id = "AQAAABBBCCCDDD" if not has_message else None
+        callback.message = None if not has_message else MagicMock(spec=Message)
+        if has_message:
+            callback.message.edit_media = AsyncMock(return_value=None)
+        callback.answer = AsyncMock(return_value=None)
+        return callback
+
+    @pytest.mark.asyncio
+    async def test_video_uses_InputMediaVideo(self, mock_bot_edit):
+        """Видео-тег → InputMediaVideo."""
+        callback = self._make_video_callback("hentai_video")
+
+        with _mock_aiohttp_get(json_data=_REDDIT_VIDEO_JSON):
+            await bot.handle_verify_callback(callback)
+
+        _args, kwargs = mock_bot_edit.call_args
+        assert isinstance(kwargs["media"], InputMediaVideo)
+        assert kwargs["media"].has_spoiler is True
+
+    @pytest.mark.asyncio
+    async def test_video_edit_failure_falls_back_to_photo(self, mock_bot_edit):
+        """TelegramBadRequest на видео → фоллбэк на фото с котом."""
+        callback = self._make_video_callback("hentai_video")
+        mock_bot_edit.side_effect = [
+            TelegramBadRequest(method="edit_message_media", message="wrong type"),
+            None,  # second call (fallback) succeeds
+        ]
+
+        with _mock_aiohttp_get(json_data=_REDDIT_VIDEO_JSON):
+            await bot.handle_verify_callback(callback)
+
+        # Было два вызова edit_message_media
+        assert mock_bot_edit.call_count == 2
+        first_call_args = mock_bot_edit.call_args_list[0]
+        second_call_args = mock_bot_edit.call_args_list[1]
+        # Первый был InputMediaVideo
+        assert isinstance(first_call_args.kwargs["media"], InputMediaVideo)
+        # Второй — InputMediaPhoto с fallback URL
+        assert isinstance(second_call_args.kwargs["media"], InputMediaPhoto)
+        assert "http.cat" in second_call_args.kwargs["media"].media
+
 
 # ─────────────────────────────────────────────────
 #  handle_more_callback
@@ -652,8 +773,9 @@ class TestHandleMoreCallback:
     async def test_random_callback_passes_no_tag(self, mock_bot_edit):
         callback = self._make_callback(None)
 
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
-            await bot.handle_more_callback(callback)
+        with patch("inline_waifu_bot.api.secrets.randbelow", return_value=0):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON) as (resp, session):
+                await bot.handle_more_callback(callback)
 
         session.get.assert_called_once_with(
             bot.WAIFU_API_URL,
@@ -854,6 +976,57 @@ class TestHandleMoreCallback:
             show_alert=True,
         )
 
+    # ── Video path ─────────────────────────────────────────
+
+    def _make_more_video_callback(
+        self, tag: str, *, has_message: bool = False,
+        clicker_id: int | None = None,
+    ) -> AsyncMock:
+        """Создаёт мок CallbackQuery с видео-тегом."""
+        callback_data = f"more:{self.OWNER_ID}:{tag}"
+        callback = AsyncMock(spec=CallbackQuery)
+        callback.data = callback_data
+        clicker_id = clicker_id or self.OWNER_ID
+        callback.from_user = MagicMock()
+        callback.from_user.id = clicker_id
+        callback.inline_message_id = "AQAAABBBCCCDDD" if not has_message else None
+        callback.message = None if not has_message else MagicMock(spec=Message)
+        if has_message:
+            callback.message.edit_media = AsyncMock(return_value=None)
+        callback.answer = AsyncMock(return_value=None)
+        return callback
+
+    @pytest.mark.asyncio
+    async def test_more_video_uses_InputMediaVideo(self, mock_bot_edit):
+        """Видео-тег → InputMediaVideo."""
+        callback = self._make_more_video_callback("hentai_video")
+
+        with _mock_aiohttp_get(json_data=_REDDIT_VIDEO_JSON):
+            await bot.handle_more_callback(callback)
+
+        _args, kwargs = mock_bot_edit.call_args
+        assert isinstance(kwargs["media"], InputMediaVideo)
+        assert kwargs["media"].has_spoiler is True
+
+    @pytest.mark.asyncio
+    async def test_more_video_edit_failure_falls_back_to_photo(self, mock_bot_edit):
+        """TelegramBadRequest на видео → фоллбэк на фото с котом."""
+        callback = self._make_more_video_callback("hentai_video")
+        mock_bot_edit.side_effect = [
+            TelegramBadRequest(method="edit_message_media", message="wrong type"),
+            None,
+        ]
+
+        with _mock_aiohttp_get(json_data=_REDDIT_VIDEO_JSON):
+            await bot.handle_more_callback(callback)
+
+        assert mock_bot_edit.call_count == 2
+        first_call = mock_bot_edit.call_args_list[0]
+        second_call = mock_bot_edit.call_args_list[1]
+        assert isinstance(first_call.kwargs["media"], InputMediaVideo)
+        assert isinstance(second_call.kwargs["media"], InputMediaPhoto)
+        assert "http.cat" in second_call.kwargs["media"].media
+
 
 # ─────────────────────────────────────────────────
 #  Конфигурация модуля
@@ -883,3 +1056,40 @@ class TestModuleConfig:
 
     def test_waifu_api_url(self):
         assert bot.WAIFU_API_URL == "https://api.waifu.im/images"
+
+    # ── Новые конфиги (фото/видео теги) ─────────────────────
+
+    def test_photo_tags_are_subset_of_valid(self):
+        assert bot.PHOTO_TAGS.issubset(bot.VALID_TAGS)
+
+    def test_video_tags_are_subset_of_valid(self):
+        assert bot.VIDEO_TAGS.issubset(bot.VALID_TAGS)
+
+    def test_photo_and_video_tags_are_disjoint(self):
+        assert bot.PHOTO_TAGS.isdisjoint(bot.VIDEO_TAGS)
+
+    def test_is_video_tag_returns_true_for_video_tags(self):
+        assert bot.is_video_tag("hentai_video") is True
+        assert bot.is_video_tag("nsfw_video") is True
+
+    def test_is_video_tag_returns_false_for_photo_tags(self):
+        assert bot.is_video_tag("waifu") is False
+
+    def test_is_video_tag_returns_false_for_none(self):
+        assert bot.is_video_tag(None) is False
+
+    def test_is_photo_tag_returns_true_for_photo_tags(self):
+        assert bot.is_photo_tag("maid") is True
+        assert bot.is_photo_tag("ero") is True
+
+    def test_is_photo_tag_returns_false_for_video_tags(self):
+        assert bot.is_photo_tag("amv") is False
+
+    def test_is_photo_tag_returns_false_for_none(self):
+        assert bot.is_photo_tag(None) is False
+
+    def test_get_subreddit_known_tag(self):
+        assert bot.get_subreddit("hentai_video") == "hentai_videos"
+
+    def test_get_subreddit_unknown_tag_returns_tag_itself(self):
+        assert bot.get_subreddit("unknown") == "unknown"
