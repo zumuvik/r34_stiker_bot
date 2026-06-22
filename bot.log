@@ -381,3 +381,36 @@ aiogram.exceptions.TelegramBadRequest: Telegram server says - Bad Request: query
 2026-06-22 16:18:49,015 [INFO] inline_waifu_bot.app: Бот запущен. Ожидание инлайн-запросов...
 2026-06-22 16:18:49,015 [INFO] aiogram.dispatcher: Start polling
 2026-06-22 16:18:49,693 [INFO] aiogram.dispatcher: Run polling for bot @Waifulinuxbot id=8953158347 - 'гайды - WAIFU OS'
+2026-06-22 16:21:50,796 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='None'
+2026-06-22 16:21:51,137 [INFO] aiogram.event: Update id=558241154 is handled. Duration 341 ms by bot id=8953158347
+2026-06-22 16:21:59,713 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='ass'
+2026-06-22 16:21:59,844 [INFO] aiogram.event: Update id=558241155 is handled. Duration 131 ms by bot id=8953158347
+2026-06-22 16:22:10,491 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='None'
+2026-06-22 16:22:10,624 [INFO] aiogram.event: Update id=558241156 is handled. Duration 132 ms by bot id=8953158347
+2026-06-22 16:23:18,594 [INFO] inline_waifu_bot.handlers: Callback от 1383064664: новый контент, тег='None'
+2026-06-22 16:23:20,182 [INFO] aiogram.event: Update id=558241157 is handled. Duration 1589 ms by bot id=8953158347
+2026-06-22 16:23:25,032 [INFO] inline_waifu_bot.handlers: Callback от 1383064664: новый контент, тег='None'
+2026-06-22 16:23:25,690 [INFO] aiogram.event: Update id=558241158 is handled. Duration 658 ms by bot id=8953158347
+2026-06-22 16:23:29,428 [INFO] inline_waifu_bot.handlers: Callback от 1383064664: новый контент, тег='None'
+2026-06-22 16:23:30,178 [INFO] aiogram.event: Update id=558241159 is handled. Duration 750 ms by bot id=8953158347
+2026-06-22 16:23:34,490 [INFO] aiogram.event: Update id=558241160 is not handled. Duration 0 ms by bot id=8953158347
+2026-06-22 16:23:42,114 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='None'
+2026-06-22 16:23:42,441 [INFO] aiogram.event: Update id=558241161 is handled. Duration 327 ms by bot id=8953158347
+2026-06-22 16:23:42,600 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='None'
+2026-06-22 16:23:42,726 [INFO] aiogram.event: Update id=558241162 is handled. Duration 125 ms by bot id=8953158347
+2026-06-22 16:23:45,900 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='None'
+2026-06-22 16:23:46,101 [INFO] aiogram.event: Update id=558241163 is handled. Duration 201 ms by bot id=8953158347
+2026-06-22 16:23:46,884 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='None'
+2026-06-22 16:23:47,014 [INFO] aiogram.event: Update id=558241164 is handled. Duration 130 ms by bot id=8953158347
+2026-06-22 16:23:48,562 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='hentai'
+2026-06-22 16:23:48,704 [INFO] aiogram.event: Update id=558241165 is handled. Duration 142 ms by bot id=8953158347
+2026-06-22 16:23:49,724 [WARNING] aiogram.dispatcher: Received SIGTERM signal
+2026-06-22 16:23:49,725 [INFO] aiogram.dispatcher: Polling stopped for bot @Waifulinuxbot id=8953158347 - 'гайды - WAIFU OS'
+2026-06-22 16:23:49,725 [INFO] aiogram.dispatcher: Polling stopped
+2026-06-22 16:23:54,190 [INFO] inline_waifu_bot.app: Бот запущен. Ожидание инлайн-запросов...
+2026-06-22 16:23:54,191 [INFO] aiogram.dispatcher: Start polling
+2026-06-22 16:23:54,771 [INFO] aiogram.dispatcher: Run polling for bot @Waifulinuxbot id=8953158347 - 'гайды - WAIFU OS'
+2026-06-22 16:23:54,895 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='None'
+2026-06-22 16:23:55,654 [INFO] aiogram.event: Update id=558241166 is handled. Duration 759 ms by bot id=8953158347
+2026-06-22 16:24:05,333 [INFO] inline_waifu_bot.handlers: Inline-запрос от 1383064664: тег='None'
+2026-06-22 16:24:05,884 [INFO] aiogram.event: Update id=558241167 is handled. Duration 551 ms by bot id=8953158347

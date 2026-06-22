@@ -21,7 +21,6 @@ from .core import bot, dp
 from .config import (
     VALID_TAGS,
     BUTTON_COOLDOWN,
-    PLACEHOLDER_IMAGE_URL,
     validate_tag,
 )
 from .api import fetch_nsfw_image
@@ -41,10 +40,10 @@ async def handle_inline_query(query: InlineQuery) -> None:
     """
     Обрабатывает инлайн-запрос: ``@bot_username [тег]``.
 
-    Возвращает ``InlineQueryResultPhoto`` с картинкой-плейсхолдером
-    (без спойлера — Telegram API не поддерживает спойлер в этом типе).
-    Сразу после отправки срабатывает ``handle_chosen_inline_result``,
-    который заменяет плейсхолдер на реальное NSFW-изображение под спойлером.
+    Возвращает ``InlineQueryResultPhoto`` с реальным превью из Waifu.im API.
+    Telegram Bot API не поддерживает ``has_spoiler`` на этом типе, поэтому
+    спойлер навешивается в ``handle_chosen_inline_result`` — сразу после
+    отправки фото заменяется на такое же, но под ``has_spoiler=True``.
     """
     tag = validate_tag(query.query)
     owner_id = query.from_user.id
@@ -52,10 +51,12 @@ async def handle_inline_query(query: InlineQuery) -> None:
 
     tag_display = tag or "random"
 
+    image_url = await fetch_nsfw_image(tag)
+
     result = InlineQueryResultPhoto(
         id=secrets.token_hex(8),
-        photo_url=PLACEHOLDER_IMAGE_URL,
-        thumbnail_url=PLACEHOLDER_IMAGE_URL,
+        photo_url=image_url,
+        thumbnail_url=image_url,
         caption=(
             f"<b>NSFW Anime</b>\n"
             f"Тег: {tag_display}"
@@ -80,8 +81,8 @@ async def handle_chosen_inline_result(chosen: ChosenInlineResult) -> None:
     """
     Обрабатывает выбор инлайн-результата пользователем.
 
-    Заменяет картинку-плейсхолдер на реальное изображение с Waifu.im
-    под спойлером (``InputMediaPhoto(has_spoiler=True)``).
+    Перезаписывает отправленное фото ``InlineQueryResultPhoto`` (без спойлера)
+    на такое же, но с ``has_spoiler=True`` через ``edit_message_media``.
     """
     if not chosen.inline_message_id:
         return
