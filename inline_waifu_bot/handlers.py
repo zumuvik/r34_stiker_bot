@@ -3,6 +3,7 @@
 
 Всё взаимодействие происходит в том же чате, где вызван инлайн.
 Никаких переходов в ЛС бота.
+Каждая кнопка проверяет, что нажал именно создатель инлайн-сообщения.
 """
 
 import logging
@@ -42,14 +43,15 @@ async def handle_inline_query(query: InlineQuery) -> None:
     Обрабатывает инлайн-запрос: ``@bot_username [тег]``.
 
     Возвращает ``InlineQueryResultArticle`` — текст-заглушку с кнопкой
-    верификации. Никакого NSFW-превью в панели выбора.
-    Верификация и показ фото происходят в том же чате.
+    верификации. В callback_data кнопки зашит ``creator_id``, чтобы
+    позже проверить, что подтверждает 18+ именно автор инлайн-запроса.
     """
+    creator_id = query.from_user.id
     tag = validate_tag(query.query)
-    logger.info("Inline-запрос от %s: тег='%s'", query.from_user.id, tag)
+    logger.info("Inline-запрос от %s: тег='%s'", creator_id, tag)
 
     tag_display = tag or "random"
-    cb_verify = f"verify_18_{tag}" if tag else "verify_18_random"
+    cb_verify = f"verify_18:{creator_id}:{tag_display}"
 
     article = InlineQueryResultArticle(
         id=secrets.token_hex(8),
@@ -86,22 +88,42 @@ async def handle_inline_query(query: InlineQuery) -> None:
 # ─────────────────── Callback: верификация 18+ → фото ───────────────────
 
 
-@dp.callback_query(F.data.startswith("verify_18_"))
+@dp.callback_query(F.data.startswith("verify_18:"))
 async def handle_verify_callback(callback: CallbackQuery) -> None:
     """
     Обрабатывает нажатие «Мне есть 18 лет ✅».
 
-    Заменяет текст-заглушку в том же чате на NSFW-фото под спойлером
-    (``InputMediaPhoto(has_spoiler=True)``) с кнопкой «🔥 Давай ещё!».
+    1. Парсит ``callback_data`` — формат ``verify_18:{creator_id}:{tag}``.
+    2. Проверяет, что нажал именно создатель инлайн-сообщения.
+    3. Заменяет текст-заглушку на NSFW-фото под спойлером.
     """
-    tag_raw = callback.data.removeprefix("verify_18_")
-    tag: str | None = tag_raw if tag_raw != "random" else None
-    owner_id = callback.from_user.id
+    payload = callback.data.removeprefix("verify_18:")
+    try:
+        creator_id_str, tag_str = payload.split(":", 1)
+        creator_id = int(creator_id_str)
+    except (ValueError, IndexError):
+        logger.warning("Невалидный callback_data: %s", callback.data)
+        await callback.answer("Ошибка данных", show_alert=True)
+        return
+
+    clicker_id = callback.from_user.id
+    if clicker_id != creator_id:
+        logger.info(
+            "Чужой нажал verify: %s (создатель %s)", clicker_id, creator_id,
+        )
+        await callback.answer(
+            "Это сообщение создал другой пользователь. "
+            "Введи @username бота сам!",
+            show_alert=True,
+        )
+        return
+
+    tag: str | None = tag_str if tag_str != "random" else None
     tag_display = tag or "random"
 
     logger.info(
         "Verify 18+ от %s: тег='%s', inline=%s",
-        owner_id, tag, bool(callback.inline_message_id),
+        creator_id, tag, bool(callback.inline_message_id),
     )
 
     await callback.answer()
@@ -122,12 +144,12 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
             await bot.edit_message_media(
                 inline_message_id=callback.inline_message_id,
                 media=media,
-                reply_markup=build_markup(tag, owner_id),
+                reply_markup=build_markup(tag, creator_id),
             )
         else:
             await callback.message.edit_media(
                 media=media,
-                reply_markup=build_markup(tag, owner_id),
+                reply_markup=build_markup(tag, creator_id),
             )
     except Exception as exc:
         logger.error("Не удалось показать фото после верификации: %s", exc)
@@ -136,22 +158,21 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
 # ─────────────────── Callback: Давай ещё! ───────────────────
 
 
-@dp.callback_query(F.data.startswith("more_"))
+@dp.callback_query(F.data.startswith("more:"))
 async def handle_more_callback(callback: CallbackQuery) -> None:
     """
     Обрабатывает нажатие на кнопку «🔥 Давай ещё!».
 
-    1. Извлекает тег и ID владельца из ``callback.data``.
-    2. Проверяет, что кнопку нажал владелец сообщения.
+    1. Парсит ``callback_data`` — формат ``more:{creator_id}:{tag}``.
+    2. Проверяет, что нажал именно создатель сообщения.
     3. Проверяет кд (3 секунды между нажатиями).
     4. Запрашивает новое изображение у Waifu.im API.
     5. Редактирует медиа-контент в том же сообщении.
     """
-    payload = callback.data.removeprefix("more_")
+    payload = callback.data.removeprefix("more:")
     try:
-        *tag_parts, owner_id_str = payload.rsplit("_", 1)
-        owner_id = int(owner_id_str)
-        tag_str = "_".join(tag_parts)
+        creator_id_str, tag_str = payload.split(":", 1)
+        creator_id = int(creator_id_str)
     except (ValueError, IndexError):
         logger.warning("Невалидный callback_data: %s", callback.data)
         await callback.answer("Ошибка данных", show_alert=True)
@@ -161,10 +182,13 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
 
     # ── Проверка владельца ────────────────────────────────
     clicker_id = callback.from_user.id
-    if clicker_id != owner_id:
-        logger.info("Чужой нажал кнопку: %s (владелец %s)", clicker_id, owner_id)
+    if clicker_id != creator_id:
+        logger.info(
+            "Чужой нажал more: %s (создатель %s)", clicker_id, creator_id,
+        )
         await callback.answer(
-            "❌ Это могут нажимать только тот, кто отправил картинку.",
+            "Это сообщение создал другой пользователь. "
+            "Введи @username бота сам!",
             show_alert=True,
         )
         return
@@ -184,7 +208,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     _cooldowns[clicker_id] = now
 
     logger.info(
-        "Callback от %s: новый контент, тег='%s'",
+        "More callback от %s: новый контент, тег='%s'",
         clicker_id, tag,
     )
 
@@ -204,12 +228,12 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
             await bot.edit_message_media(
                 inline_message_id=callback.inline_message_id,
                 media=media,
-                reply_markup=build_markup(tag, owner_id),
+                reply_markup=build_markup(tag, creator_id),
             )
         else:
             await callback.message.edit_media(
                 media=media,
-                reply_markup=build_markup(tag, owner_id),
+                reply_markup=build_markup(tag, creator_id),
             )
         await callback.answer()
     except Exception as exc:

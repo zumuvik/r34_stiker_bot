@@ -9,13 +9,10 @@ def build_markup(tag: str | None, owner_id: int) -> InlineKeyboardMarkup:
     """
     Создаёт инлайн-клавиатуру с кнопкой «🔥 Давай ещё!».
 
-    В ``callback_data`` кодируется тег и ID владельца сообщения,
-    чтобы при нажатии можно было проверить, что кнопку жмёт тот же
-    пользователь.
+    В ``callback_data`` кодируется ID владельца и тег, чтобы при
+    нажатии можно было проверить, что кнопку жмёт тот же пользователь.
 
-    Формат callback_data:
-        - ``more_random_{owner_id}`` — если тег не указан
-        - ``more_{tag}_{owner_id}`` — если тег указан
+    Формат callback_data: ``more:{owner_id}:{tag}``.
 
     Args:
         tag: Текущий тег или ``None``.
@@ -24,8 +21,8 @@ def build_markup(tag: str | None, owner_id: int) -> InlineKeyboardMarkup:
     Returns:
         Готовая ``InlineKeyboardMarkup`` с одной кнопкой.
     """
-    tag_part = f"more_{tag}" if tag else "more_random"
-    data = f"{tag_part}_{owner_id}"
+    tag_part = tag if tag else "random"
+    data = f"more:{owner_id}:{tag_part}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
