@@ -46,8 +46,8 @@ from .app import main  # noqa: F401, E402
 # Явный реэкспорт для тестов (импортирующих модуль).
 from .handlers import (  # noqa: F401, E402
     handle_inline_query,
+    handle_verify_callback,
     handle_more_callback,
-    handle_confirm_age,
     handle_start,
     _cooldowns,
 )
