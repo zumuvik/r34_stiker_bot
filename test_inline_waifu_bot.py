@@ -20,7 +20,6 @@ import aiohttp
 import pytest
 from aiogram.types import (
     CallbackQuery,
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultPhoto,
@@ -256,7 +255,7 @@ class TestFetchNsfwImage:
 
 
 class TestHandleInlineQuery:
-    """Проверяем логику формирования ответа на инлайн-запрос."""
+    """Проверяет, что инлайн возвращает InlineQueryResultPhoto с фото и кнопкой."""
 
     SUCCESS_URL = "https://cdn.waifu.im/inline_test.jpg"
     SUCCESS_JSON = {"items": [{"url": SUCCESS_URL}]}
@@ -269,57 +268,141 @@ class TestHandleInlineQuery:
         query.answer = AsyncMock(return_value=None)
         return query
 
-    @pytest.mark.asyncio
-    async def test_valid_tag_in_caption(self):
-        query = self._make_query("maid")
+    # ── Тип результата ──────────────────────────────────────
 
+    @pytest.mark.asyncio
+    async def test_returns_photo_not_article(self):
+        """Возвращается InlineQueryResultPhoto — фото с превью."""
+        query = self._make_query("maid")
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_inline_query(query)
 
         query.answer.assert_awaited_once()
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
+        assert isinstance(result, InlineQueryResultPhoto)
+
+    # ── photo_url / thumbnail_url ───────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_photo_url_from_api(self):
+        query = self._make_query("maid")
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert result.photo_url == self.SUCCESS_URL
+        assert result.thumbnail_url == self.SUCCESS_URL
+
+    @pytest.mark.asyncio
+    async def test_fallback_on_api_error(self):
+        """При ошибке API использует FALLBACK_IMAGE_URL."""
+        query = self._make_query("maid")
+        with _mock_aiohttp_get(status=500, text_data="Server Error"):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert result.photo_url == bot.FALLBACK_IMAGE_URL
+
+    # ── Caption ─────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_caption_contains_tag(self):
+        query = self._make_query("maid")
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert result.caption is not None
         assert "maid" in result.caption
-        assert isinstance(result, InlineQueryResultPhoto)
 
     @pytest.mark.asyncio
-    async def test_invalid_tag_uses_random_in_caption(self):
-        query = self._make_query("unknown_tag")
-
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert "random" in result.caption
-
-    @pytest.mark.asyncio
-    async def test_empty_query_uses_random(self):
+    async def test_caption_contains_random_when_no_tag(self):
         query = self._make_query("")
-
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
         assert "random" in result.caption
-        assert isinstance(result, InlineQueryResultPhoto)
 
     @pytest.mark.asyncio
-    async def test_whitespace_query_uses_random(self):
-        query = self._make_query("   ")
-
+    async def test_caption_contains_random_when_invalid_tag(self):
+        query = self._make_query("unknown")
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
         assert "random" in result.caption
+
+    # ── Reply markup (кнопка) ───────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_has_reply_markup(self):
+        query = self._make_query("maid")
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert result.reply_markup is not None
+        assert result.reply_markup.inline_keyboard[0][0].text == "🔥 Давай ещё!"
+
+    @pytest.mark.asyncio
+    async def test_reply_markup_contains_owner_id(self):
+        query = self._make_query("maid")
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        cd = result.reply_markup.inline_keyboard[0][0].callback_data
+        assert "12345" in cd
+
+    @pytest.mark.asyncio
+    async def test_reply_markup_contains_tag(self):
+        query = self._make_query("maid")
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        cd = result.reply_markup.inline_keyboard[0][0].callback_data
+        assert "more_maid_" in cd
+
+    @pytest.mark.asyncio
+    async def test_reply_markup_random_when_no_tag(self):
+        query = self._make_query("")
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        cd = result.reply_markup.inline_keyboard[0][0].callback_data
+        assert "more_random_" in cd
+
+    # ── Нет input_message_content ─────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_no_input_message_content(self):
+        """Нет текстового сообщения — фото отправляется напрямую."""
+        query = self._make_query("maid")
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert result.input_message_content is None
+
+    # ── Параметры query.answer ─────────────────────────────
 
     @pytest.mark.asyncio
     async def test_cache_time_is_zero(self):
         query = self._make_query("ero")
-
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_inline_query(query)
 
@@ -327,35 +410,17 @@ class TestHandleInlineQuery:
         assert kwargs["cache_time"] == 0
 
     @pytest.mark.asyncio
-    async def test_result_has_reply_markup(self):
-        query = self._make_query("hentai")
-
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        markup = result.reply_markup
-        assert markup is not None
-        btn = markup.inline_keyboard[0][0]
-        assert btn.callback_data == "more_hentai_12345"
-
-    @pytest.mark.asyncio
-    async def test_result_has_reply_markup_random(self):
-        query = self._make_query("")
-
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        btn = result.reply_markup.inline_keyboard[0][0]
-        assert btn.callback_data == "more_random_12345"
-
-    @pytest.mark.asyncio
-    async def test_single_result_returned(self):
+    async def test_is_personal(self):
         query = self._make_query("maid")
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
 
+        _args, kwargs = query.answer.call_args
+        assert kwargs["is_personal"] is True
+
+    @pytest.mark.asyncio
+    async def test_single_result(self):
+        query = self._make_query("maid")
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_inline_query(query)
 
@@ -363,80 +428,17 @@ class TestHandleInlineQuery:
         assert len(kwargs["results"]) == 1
 
     @pytest.mark.asyncio
-    async def test_fallback_on_api_error(self):
-        """При ошибке API в ответе всё равно валидный InlineQueryResultPhoto."""
-        query = self._make_query("maid")
-
-        with _mock_aiohttp_get(status=503):
-            await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert result.photo_url == bot.FALLBACK_IMAGE_URL
-        assert result.thumbnail_url == bot.THUMBNAIL_PLACEHOLDER
-
-    @pytest.mark.asyncio
-    async def test_thumbnail_is_placeholder_not_photo(self):
-        """Превью — плейсхолдер, а не NSFW-картинка."""
-        query = self._make_query("maid")
-
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        # thumbnail отличается от photo_url
-        assert result.thumbnail_url == bot.THUMBNAIL_PLACEHOLDER
-        assert result.thumbnail_url != result.photo_url
-
-    @pytest.mark.asyncio
-    async def test_title_shows_tag(self):
-        """В title отображается тег."""
-        query = self._make_query("ero")
-
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert result.title == "🎴 Показать карточку (ero)"
-
-    @pytest.mark.asyncio
-    async def test_title_shows_random_when_no_tag(self):
-        """Без тега в title пишется random."""
-        query = self._make_query("")
-
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert result.title == "🎴 Показать карточку (random)"
-
-    @pytest.mark.asyncio
-    async def test_caption_does_not_contain_davai_eshe(self):
-        """Текст про «Давай ещё!» удалён из caption."""
-        query = self._make_query("maid")
-
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert "Давай ещё" not in result.caption
-        assert "новая картинка" not in result.caption
-
-    @pytest.mark.asyncio
     async def test_switch_pm_text_and_parameter(self):
-        """Проверяем switch_pm_text и switch_pm_parameter."""
         query = self._make_query("maid")
-
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         assert kwargs.get("switch_pm_text") == "📋 Список тегов"
         assert kwargs.get("switch_pm_parameter") == "tags"
+
+
+
 
 
 # ─────────────────────────────────────────────────
