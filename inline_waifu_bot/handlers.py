@@ -9,6 +9,7 @@ import time
 from aiogram import F
 from aiogram.filters import CommandStart
 from aiogram.types import (
+    ChosenInlineResult,
     InlineQuery,
     InlineQueryResultPhoto,
     CallbackQuery,
@@ -17,7 +18,12 @@ from aiogram.types import (
 )
 
 from .core import bot, dp
-from .config import VALID_TAGS, BUTTON_COOLDOWN, validate_tag
+from .config import (
+    VALID_TAGS,
+    BUTTON_COOLDOWN,
+    PLACEHOLDER_IMAGE_URL,
+    validate_tag,
+)
 from .api import fetch_nsfw_image
 from .keyboard import build_markup
 
@@ -35,10 +41,10 @@ async def handle_inline_query(query: InlineQuery) -> None:
     """
     Обрабатывает инлайн-запрос: ``@bot_username [тег]``.
 
-    Запрашивает изображение у Waifu.im API и возвращает
-    ``InlineQueryResultPhoto`` — в панели отображается превью,
-    при клике фото мгновенно отправляется в чат с кнопкой
-    «🔥 Давай ещё!».
+    Возвращает ``InlineQueryResultPhoto`` с картинкой-плейсхолдером
+    (без спойлера — Telegram API не поддерживает спойлер в этом типе).
+    Сразу после отправки срабатывает ``handle_chosen_inline_result``,
+    который заменяет плейсхолдер на реальное NSFW-изображение под спойлером.
     """
     tag = validate_tag(query.query)
     owner_id = query.from_user.id
@@ -46,18 +52,14 @@ async def handle_inline_query(query: InlineQuery) -> None:
 
     tag_display = tag or "random"
 
-    # Получаем URL изображения от Waifu.im API
-    image_url = await fetch_nsfw_image(tag)
-
     result = InlineQueryResultPhoto(
         id=secrets.token_hex(8),
-        photo_url=image_url,
-        thumbnail_url=image_url,
+        photo_url=PLACEHOLDER_IMAGE_URL,
+        thumbnail_url=PLACEHOLDER_IMAGE_URL,
         caption=(
             f"<b>NSFW Anime</b>\n"
             f"Тег: {tag_display}"
         ),
-        has_spoiler=True,
         reply_markup=build_markup(tag, owner_id),
     )
 
@@ -68,6 +70,48 @@ async def handle_inline_query(query: InlineQuery) -> None:
         switch_pm_text="📋 Список тегов",
         switch_pm_parameter="tags",
     )
+
+
+# ─────────────────── Chosen Inline Result — замена плейсхолдера ───────────────────
+
+
+@dp.chosen_inline_result()
+async def handle_chosen_inline_result(chosen: ChosenInlineResult) -> None:
+    """
+    Обрабатывает выбор инлайн-результата пользователем.
+
+    Заменяет картинку-плейсхолдер на реальное изображение с Waifu.im
+    под спойлером (``InputMediaPhoto(has_spoiler=True)``).
+    """
+    if not chosen.inline_message_id:
+        return
+
+    tag = validate_tag(chosen.query)
+    owner_id = chosen.from_user.id
+    logger.info(
+        "ChosenInlineResult от %s: тег='%s', msg=%s",
+        owner_id, tag, chosen.inline_message_id,
+    )
+
+    image_url = await fetch_nsfw_image(tag)
+
+    media = InputMediaPhoto(
+        media=image_url,
+        caption=(
+            f"<b>NSFW Anime</b>\n"
+            f"Тег: {tag or 'random'}"
+        ),
+        has_spoiler=True,
+    )
+
+    try:
+        await bot.edit_message_media(
+            inline_message_id=chosen.inline_message_id,
+            media=media,
+            reply_markup=build_markup(tag, owner_id),
+        )
+    except Exception as exc:
+        logger.error("Не удалось заменить плейсхолдер: %s", exc)
 
 
 # ─────────────────── Callback Query Handler ───────────────────

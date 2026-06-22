@@ -285,26 +285,26 @@ class TestHandleInlineQuery:
     # ── photo_url / thumbnail_url ───────────────────────────
 
     @pytest.mark.asyncio
-    async def test_photo_url_from_api(self):
+    async def test_photo_url_is_placeholder(self):
+        """Используется PLACEHOLDER_IMAGE_URL — плейсхолдер без спойлера."""
         query = self._make_query("maid")
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_inline_query(query)
+        await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
-        assert result.photo_url == self.SUCCESS_URL
-        assert result.thumbnail_url == self.SUCCESS_URL
+        assert result.photo_url == bot.PLACEHOLDER_IMAGE_URL
+        assert result.thumbnail_url == bot.PLACEHOLDER_IMAGE_URL
 
     @pytest.mark.asyncio
-    async def test_fallback_on_api_error(self):
-        """При ошибке API использует FALLBACK_IMAGE_URL."""
+    async def test_no_api_call_from_inline(self):
+        """Inline-хэндлер больше не делает запрос к API — плейсхолдер статичен."""
         query = self._make_query("maid")
-        with _mock_aiohttp_get(status=500, text_data="Server Error"):
-            await bot.handle_inline_query(query)
+        # Не подменяем aiohttp — если бы был запрос, упало бы с ошибкой
+        await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
-        assert result.photo_url == bot.FALLBACK_IMAGE_URL
+        assert result.photo_url == bot.PLACEHOLDER_IMAGE_URL
 
     # ── Caption ─────────────────────────────────────────────
 
