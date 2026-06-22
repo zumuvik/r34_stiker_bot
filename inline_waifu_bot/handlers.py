@@ -57,6 +57,7 @@ async def handle_inline_query(query: InlineQuery) -> None:
             f"<b>NSFW Anime</b>\n"
             f"Тег: {tag_display}"
         ),
+        has_spoiler=True,
         reply_markup=build_markup(tag, owner_id),
     )
 
@@ -133,6 +134,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
             f"<b>NSFW Anime</b>\n"
             f"Тег: {tag or 'random'}"
         ),
+        has_spoiler=True,
     )
 
     try:
