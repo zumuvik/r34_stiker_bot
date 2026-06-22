@@ -47,7 +47,7 @@ if not BOT_TOKEN:
 WAIFU_API_URL: str = "https://api.waifu.im/images"
 """Базовый эндпоинт Waifu.im API."""
 
-FALLBACK_IMAGE_URL: str = "https://placehold.co/512x512/1a1a2e/ffffff?text=NSFW+Error"
+FALLBACK_IMAGE_URL: str = "https://http.cat/500"
 """Заглушка на случай недоступности Waifu.im API или ошибочного ответа."""
 
 
@@ -64,7 +64,7 @@ VALID_TAGS: frozenset[str] = frozenset({
     "waifu", "maid", "ero", "hentai", "ass", "oppai",
     "milf", "oral", "paizuri", "ecchi", "selfies",
     "uniform", "marin-kitagawa", "mori-calliope",
-    "raiden-shogun", "furry",
+    "raiden-shogun",
 })
 
 
