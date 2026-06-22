@@ -152,7 +152,12 @@ class TestFetchNsfwContent:
 
     FALLBACK = bot.FALLBACK_IMAGE_URL
     PHOTO_URL = "https://cdn.waifu.im/test_123.jpg"
-    PHOTO_JSON = {"items": [{"url": PHOTO_URL}]}
+    PHOTO_JSON = {
+        "items": [{
+            "url": PHOTO_URL,
+            "tags": [{"slug": "waifu", "name": "Waifu"}],
+        }],
+    }
     EMPTY_JSON = {"items": []}
 
     # ── Photo: Waifu.im (успех) ──────────────────────────────
@@ -160,7 +165,7 @@ class TestFetchNsfwContent:
     @pytest.mark.asyncio
     async def test_photo_with_tag(self):
         with _mock_aiohttp_get(json_data=self.PHOTO_JSON) as (resp, session):
-            url, mtype = await bot.fetch_nsfw_content("maid")
+            url, mtype, _display = await bot.fetch_nsfw_content("maid")
 
         assert url == self.PHOTO_URL
         assert mtype == "photo"
@@ -174,7 +179,7 @@ class TestFetchNsfwContent:
         """При tag=None и выборе фото — только IsNsfw."""
         with patch("secrets.randbelow", return_value=0):
             with _mock_aiohttp_get(json_data=self.PHOTO_JSON) as (resp, session):
-                url, mtype = await bot.fetch_nsfw_content(None)
+                url, mtype, _display = await bot.fetch_nsfw_content(None)
 
         assert url == self.PHOTO_URL
         assert mtype == "photo"
@@ -189,7 +194,7 @@ class TestFetchNsfwContent:
     async def test_video_with_gif_tag(self):
         """Тег neko_gif → Purrbot API."""
         with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON) as (resp, session):
-            url, mtype = await bot.fetch_nsfw_content("neko_gif")
+            url, mtype, _display = await bot.fetch_nsfw_content("neko_gif")
 
         assert url == "https://cdn.purrbot.site/nsfw/neko/gif/neko_031.gif"
         assert mtype == "video"
@@ -204,7 +209,7 @@ class TestFetchNsfwContent:
                 with _mock_aiohttp_get(
                     json_data=_PURRBOT_GIF_JSON
                 ) as (resp, session):
-                    url, mtype = await bot.fetch_nsfw_content(None)
+                    url, mtype, _display = await bot.fetch_nsfw_content(None)
 
         assert mtype == "video"
 
@@ -213,7 +218,7 @@ class TestFetchNsfwContent:
     @pytest.mark.asyncio
     async def test_photo_non_200(self):
         with _mock_aiohttp_get(status=500, text_data="Error"):
-            url, mtype = await bot.fetch_nsfw_content("waifu")
+            url, mtype, _display = await bot.fetch_nsfw_content("waifu")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -221,7 +226,7 @@ class TestFetchNsfwContent:
     @pytest.mark.asyncio
     async def test_photo_empty_list(self):
         with _mock_aiohttp_get(json_data=self.EMPTY_JSON):
-            url, mtype = await bot.fetch_nsfw_content("maid")
+            url, mtype, _display = await bot.fetch_nsfw_content("maid")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -231,7 +236,7 @@ class TestFetchNsfwContent:
     @pytest.mark.asyncio
     async def test_video_purrbot_500_falls_back_to_photo(self):
         with _mock_aiohttp_get(status=500, text_data="Server Error"):
-            url, mtype = await bot.fetch_nsfw_content("neko_gif")
+            url, mtype, _display = await bot.fetch_nsfw_content("neko_gif")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -239,7 +244,7 @@ class TestFetchNsfwContent:
     @pytest.mark.asyncio
     async def test_video_purrbot_error_falls_back_to_photo(self):
         with _mock_aiohttp_get(json_data=_PURRBOT_ERROR_JSON):
-            url, mtype = await bot.fetch_nsfw_content("neko_gif")
+            url, mtype, _display = await bot.fetch_nsfw_content("neko_gif")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -247,7 +252,7 @@ class TestFetchNsfwContent:
     @pytest.mark.asyncio
     async def test_video_purrbot_no_link_falls_back_to_photo(self):
         with _mock_aiohttp_get(json_data=_PURRBOT_NO_LINK_JSON):
-            url, mtype = await bot.fetch_nsfw_content("nsfw_gif")
+            url, mtype, _display = await bot.fetch_nsfw_content("nsfw_gif")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -258,7 +263,7 @@ class TestFetchNsfwContent:
     async def test_photo_timeout(self):
         with _mock_aiohttp_get() as (resp, session):
             resp.json.side_effect = asyncio.TimeoutError
-            url, mtype = await bot.fetch_nsfw_content("maid")
+            url, mtype, _display = await bot.fetch_nsfw_content("maid")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -267,7 +272,7 @@ class TestFetchNsfwContent:
     async def test_photo_client_error(self):
         with _mock_aiohttp_get() as (resp, session):
             resp.json.side_effect = aiohttp.ClientError("reset")
-            url, mtype = await bot.fetch_nsfw_content("maid")
+            url, mtype, _display = await bot.fetch_nsfw_content("maid")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -277,7 +282,7 @@ class TestFetchNsfwContent:
     @pytest.mark.asyncio
     async def test_photo_malformed_json(self):
         with _mock_aiohttp_get(json_data=["not", "a", "dict"]):
-            url, mtype = await bot.fetch_nsfw_content("waifu")
+            url, mtype, _display = await bot.fetch_nsfw_content("waifu")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -285,7 +290,7 @@ class TestFetchNsfwContent:
     @pytest.mark.asyncio
     async def test_photo_missing_url_key(self):
         with _mock_aiohttp_get(json_data={"items": [{"id": 1}]}):
-            url, mtype = await bot.fetch_nsfw_content("waifu")
+            url, mtype, _display = await bot.fetch_nsfw_content("waifu")
 
         assert url == self.FALLBACK
         assert mtype == "photo"
@@ -497,7 +502,7 @@ class TestHandleVerifyCallback:
     """Проверяет логику кнопки «Мне есть 18 лет ✅»."""
 
     SUCCESS_URL = "https://cdn.waifu.im/verify_test.jpg"
-    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL}]}
+    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL, "tags": [{"slug": "waifu"}]}]}
     CREATOR_ID = 12345
     STRANGER_ID = 99999
 
@@ -694,7 +699,7 @@ class TestHandleMoreCallback:
     """Проверяем логику кнопки «Давай ещё!»."""
 
     SUCCESS_URL = "https://cdn.waifu.im/callback_new.jpg"
-    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL}]}
+    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL, "tags": [{"slug": "waifu"}]}]}
     OWNER_ID = 12345
     STRANGER_ID = 99999
 
@@ -892,14 +897,17 @@ class TestHandleMoreCallback:
         assert "maid" in kwargs["media"].caption
 
     @pytest.mark.asyncio
-    async def test_inline_caption_contains_random(self, mock_bot_edit):
+    async def test_inline_caption_contains_real_tag_when_random(self, mock_bot_edit):
+        """При random в подписи реальный тег из ответа API, не 'random'."""
         callback = self._make_callback(None)
 
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_more_callback(callback)
+        with patch("inline_waifu_bot.api.secrets.randbelow", return_value=0):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_more_callback(callback)
 
         _args, kwargs = mock_bot_edit.call_args
-        assert "random" in kwargs["media"].caption
+        assert "waifu" in kwargs["media"].caption
+        assert "random" not in kwargs["media"].caption
 
     # -- callback.message path (обычное сообщение без inline) ---
 

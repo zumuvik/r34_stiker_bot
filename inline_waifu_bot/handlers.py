@@ -171,8 +171,8 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
 
     await callback.answer()
 
-    media_url, media_type = await fetch_nsfw_content(tag)
-    caption = f"<b>NSFW Anime</b>\nТег: {tag_display}"
+    media_url, media_type, display_tag = await fetch_nsfw_content(tag)
+    caption = f"<b>NSFW Anime</b>\nТег: {display_tag}"
     media_obj = _build_media(media_url, media_type, caption)
 
     try:
@@ -186,7 +186,7 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
             media=config.FALLBACK_IMAGE_URL,
             caption=(
                 f"<b>NSFW Anime</b> (фолбэк)\n"
-                f"Тег: {tag_display}"
+                f"Тег: {display_tag}"
             ),
         )
         await _edit_message(callback, fallback, build_markup(tag, creator_id))
@@ -252,8 +252,8 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         clicker_id, tag,
     )
 
-    media_url, media_type = await fetch_nsfw_content(tag)
-    caption = f"<b>NSFW Anime</b>\nТег: {tag or 'random'}"
+    media_url, media_type, display_tag = await fetch_nsfw_content(tag)
+    caption = f"<b>NSFW Anime</b>\nТег: {display_tag}"
     media_obj = _build_media(media_url, media_type, caption)
 
     try:
@@ -268,7 +268,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
             media=config.FALLBACK_IMAGE_URL,
             caption=(
                 f"<b>NSFW Anime</b> (фолбэк)\n"
-                f"Тег: {tag or 'random'}"
+                f"Тег: {display_tag}"
             ),
             has_spoiler=True,
         )

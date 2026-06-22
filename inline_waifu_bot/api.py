@@ -1,9 +1,8 @@
 """
 Работа с провайдерами контента: Waifu.im (фото) и Purrbot API (GIF).
 
-Каждая функция-загрузчик возвращает ``(media_url, media_type)``,
-где ``media_type`` — ``"photo"`` или ``"video"`` (GIF отправляется
-как InputMediaVideo).
+Каждая функция-загрузчик возвращает ``(media_url, media_type, display_tag)``,
+где ``display_tag`` — реальный тег контента (полезно при random-выборе).
 """
 
 import asyncio
@@ -22,65 +21,73 @@ PURRBOT_API_BASE = "https://api.purrbot.site"
 # ─────────────────── Основная точка входа ───────────────────
 
 
-async def fetch_nsfw_content(tag: str | None = None) -> tuple[str, str]:
+async def fetch_nsfw_content(
+    tag: str | None = None,
+) -> tuple[str, str, str]:
     """
     Запрашивает контент (фото или GIF) в зависимости от тега.
 
-    * Если тег — видео-тег (``VIDEO_TAGS``) → запрос к Purrbot API (GIF).
-    * Если тег — фото-тег (``PHOTO_TAGS``) → запрос к Waifu.im.
-    * Если тег ``None`` (random) — случайный выбор 50/50.
+    * Если тег — видео-тег (``VIDEO_TAGS``) → Purrbot API (GIF).
+    * Если тег — фото-тег (``PHOTO_TAGS``) → Waifu.im.
+    * Если тег ``None`` (random) — 50/50.
 
     Returns:
-        Кортеж ``(media_url, media_type)``.
-        При ошибке загрузки возвращает ``(FALLBACK_IMAGE_URL, "photo")``.
+        Кортеж ``(media_url, media_type, display_tag)``.
+        ``display_tag`` — реальный тег полученного контента.
+        При ошибке возвращает ``(FALLBACK_IMAGE_URL, "photo", "error")``.
     """
+    # ── Конкретный видео-тег ────────────────────────────
     if tag is not None and config.is_video_tag(tag):
         endpoint = config.get_video_endpoint(tag)
         try:
             url = await _fetch_purrbot(endpoint)
-            return (url, "video")
+            return (url, "video", tag)
         except Exception:
             logger.exception("Purrbot fetch failed, falling back to photo")
-            return (config.FALLBACK_IMAGE_URL, "photo")
+            return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
+    # ── Конкретный фото-тег ─────────────────────────────
     if tag is not None and config.is_photo_tag(tag):
-        url = await _fetch_waifu_photo(tag)
-        return (url, "photo")
+        url, _ = await _fetch_waifu_photo(tag)
+        return (url, "photo", tag)
 
-    # tag is None — случайный выбор 50/50
+    # ── Random (50/50) ─────────────────────────────────
     if tag is None:
         if secrets.randbelow(2) == 0:
-            url = await _fetch_waifu_photo(None)
-            return (url, "photo")
+            url, actual_tag = await _fetch_waifu_photo(None)
+            display = actual_tag or "random"
+            return (url, "photo", display)
         else:
             ep_list = list(config.VIDEO_ENDPOINTS.values())
             endpoint = secrets.choice(ep_list)
             try:
                 url = await _fetch_purrbot(endpoint)
-                return (url, "video")
+                return (url, "video", "random_gif")
             except Exception:
                 logger.warning(
                     "Purrbot random failed, falling back to Waifu.im photo"
                 )
-                url = await _fetch_waifu_photo(None)
-                return (url, "photo")
+                url, actual_tag = await _fetch_waifu_photo(None)
+                display = actual_tag or "random"
+                return (url, "photo", display)
 
-    # Крайний случай (не должен возникать при корректной валидации)
-    return (config.FALLBACK_IMAGE_URL, "photo")
+    return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
 
 # ─────────────────── Waifu.im (фото) ───────────────────
 
 
-async def _fetch_waifu_photo(tag: str | None = None) -> str:
+async def _fetch_waifu_photo(
+    tag: str | None = None,
+) -> tuple[str, str | None]:
     """
     Запрашивает NSFW-изображение у Waifu.im API.
 
-    Query-параметры: ``IsNsfw=True`` и, если передан тег,
-    ``IncludedTags={tag}``.
-
     Returns:
-        Прямой URL изображения или ``config.FALLBACK_IMAGE_URL`` при ошибке.
+        Кортеж ``(url, actual_tag_slug_or_None)``.
+        ``actual_tag_slug`` извлекается из ответа API (поле
+        ``tags[0]["slug"]``), если доступен.
+        При ошибке возвращает ``(FALLBACK_IMAGE_URL, None)``.
     """
     params: dict[str, str] = {"IsNsfw": "True"}
     if tag:
@@ -101,7 +108,7 @@ async def _fetch_waifu_photo(tag: str | None = None) -> str:
                     logger.error(
                         "Waifu API вернул %s: %s", response.status, body
                     )
-                    return config.FALLBACK_IMAGE_URL
+                    return (config.FALLBACK_IMAGE_URL, None)
 
                 data = await response.json()
                 items = data.get("items") or data.get("images", [])
@@ -110,27 +117,34 @@ async def _fetch_waifu_photo(tag: str | None = None) -> str:
                     logger.error(
                         "Waifu API вернул пустой список изображений"
                     )
-                    return config.FALLBACK_IMAGE_URL
+                    return (config.FALLBACK_IMAGE_URL, None)
 
-                return items[0]["url"]
+                # Извлекаем тег из ответа (первый тег первого изображения)
+                img = items[0]
+                actual_tag: str | None = None
+                tags = img.get("tags")
+                if tags and isinstance(tags, list) and len(tags) > 0:
+                    actual_tag = tags[0].get("slug") or tags[0].get("name")
+
+                return (img["url"], actual_tag)
 
     except asyncio.TimeoutError:
         logger.error(
             "Таймаут запроса к Waifu.im API (%s сек)",
             config.API_TIMEOUT_SECONDS,
         )
-        return config.FALLBACK_IMAGE_URL
+        return (config.FALLBACK_IMAGE_URL, None)
     except aiohttp.ClientError as exc:
         logger.error("HTTP-ошибка при запросе к Waifu.im API: %s", exc)
-        return config.FALLBACK_IMAGE_URL
+        return (config.FALLBACK_IMAGE_URL, None)
     except (KeyError, IndexError, ValueError) as exc:
         logger.error("Ошибка парсинга ответа Waifu API: %s", exc)
-        return config.FALLBACK_IMAGE_URL
+        return (config.FALLBACK_IMAGE_URL, None)
     except Exception as exc:
         logger.exception(
             "Неожиданная ошибка при запросе к Waifu.im API: %s", exc
         )
-        return config.FALLBACK_IMAGE_URL
+        return (config.FALLBACK_IMAGE_URL, None)
 
 
 # ─────────────────── Purrbot API (GIF) ───────────────────
