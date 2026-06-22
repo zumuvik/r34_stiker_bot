@@ -30,7 +30,6 @@ from .config import (  # noqa: F401, E402
     BOT_TOKEN,
     WAIFU_API_URL,
     FALLBACK_IMAGE_URL,
-    PLACEHOLDER_IMAGE_URL,
     API_TIMEOUT_SECONDS,
     BUTTON_COOLDOWN,
     VALID_TAGS,
@@ -48,6 +47,7 @@ from .app import main  # noqa: F401, E402
 from .handlers import (  # noqa: F401, E402
     handle_inline_query,
     handle_more_callback,
+    handle_confirm_age,
     handle_start,
     _cooldowns,
 )

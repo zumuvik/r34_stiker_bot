@@ -50,9 +50,7 @@ WAIFU_API_URL: str = "https://api.waifu.im/images"
 FALLBACK_IMAGE_URL: str = "https://placehold.co/512x512/1a1a2e/ffffff?text=NSFW+Error"
 """Заглушка на случай недоступности Waifu.im API или ошибочного ответа."""
 
-PLACEHOLDER_IMAGE_URL: str = "https://placehold.co/512x512/1a1a2e/ffffff?text=.&font=playfair-display"
-"""Плейсхолдер для первого показа в инлайн-режиме (без спойлера).
-   Сразу после отправки заменяется реальным фото под спойлером."""
+
 
 API_TIMEOUT_SECONDS: int = 5
 """Таймаут HTTP-запроса к Waifu.im API (в секундах)."""
