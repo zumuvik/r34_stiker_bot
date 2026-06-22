@@ -13,6 +13,10 @@ Inline NSFW Telegram Bot (18+)
     export BOT_TOKEN="your_token_here"
     python inline_waifu_bot.py
 
+Запуск:
+    # 1. Создать .env с BOT_TOKEN=...
+    # 2. python inline_waifu_bot.py
+
 Зависимости:
     pip install aiogram aiohttp
 """
@@ -39,10 +43,39 @@ from aiogram.types import (
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
+# ─────────────────── Загрузка .env ───────────────────
+
+
+def _load_dotenv(path: str = ".env") -> None:
+    """
+    Загружает переменные из ``.env``-файла в ``os.environ``.
+
+    Не требует внешних зависимостей. Формат строк: ``KEY=VALUE``.
+    Пропускает пустые строки и комментарии (``#``).
+    Не перезаписывает уже установленные переменные окружения.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip("\"'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except FileNotFoundError:
+        pass  # .env опционален
+
+
+_load_dotenv()
+
+
 # ─────────────────── Конфигурация ───────────────────
 
 BOT_TOKEN: str | None = os.getenv("BOT_TOKEN")
-"""Токен бота из переменной окружения `BOT_TOKEN`."""
+"""Токен бота из переменной окружения ``BOT_TOKEN`` (либо из ``.env``)."""
 
 if not BOT_TOKEN:
     print("FATAL: Укажите BOT_TOKEN в переменных окружения.", file=sys.stderr)
