@@ -487,13 +487,13 @@ class TestHandleInlineQuery:
         assert len(kwargs["results"]) == 1
 
     @pytest.mark.asyncio
-    async def test_switch_pm_text_and_parameter(self):
+    async def test_no_switch_pm(self):
+        """Кнопка «список тегов» удалена."""
         query = self._make_query("maid")
         await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
-        assert kwargs.get("switch_pm_text") == "📋 Список тегов"
-        assert kwargs.get("switch_pm_parameter") == "tags"
+        assert "switch_pm_text" not in kwargs
 
 
 

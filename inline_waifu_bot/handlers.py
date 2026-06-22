@@ -147,8 +147,6 @@ async def handle_inline_query(query: InlineQuery) -> None:
         results=[article],
         cache_time=0,
         is_personal=True,
-        switch_pm_text="📋 Список тегов",
-        switch_pm_parameter="tags",
     )
 
 
@@ -245,6 +243,9 @@ async def _answer_leaderboard_with_tags(query: InlineQuery, user_id: int) -> Non
         ),
     ]
 
+    # Random — сразу после лидерборда
+    results.append(_make_verify_article(user_id, "random"))
+
     # Все доступные теги
     for tag in sorted(config.VALID_TAGS):
         results.append(_make_verify_article(user_id, tag))
@@ -253,8 +254,6 @@ async def _answer_leaderboard_with_tags(query: InlineQuery, user_id: int) -> Non
         results=results,
         cache_time=0,
         is_personal=True,
-        switch_pm_text="📋 Список тегов",
-        switch_pm_parameter="tags",
     )
 
 
