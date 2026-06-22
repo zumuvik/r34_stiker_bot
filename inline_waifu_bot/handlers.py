@@ -119,79 +119,42 @@ async def handle_inline_query(query: InlineQuery) -> None:
     """
     Обрабатывает инлайн-запрос: ``@bot_username [тег]``.
 
-    - Пустой запрос / ``top`` / ``stats`` → лидерборд.
-    - Всё остальное → ``InlineQueryResultArticle`` с кнопкой верификации.
+    - Пустой запрос → лидерборд + список тегов.
+    - ``top`` / ``stats`` → только лидерборд.
+    - ``<тег>`` → только верификация для тега.
     """
-    # Шаг 1: очищаем запрос от пробелов, приводим к нижнему регистру
     user_query = query.query.strip().lower()
-
-    # Шаг 2: лидерборд при пустом запросе или по "top"/"stats"
-    if not user_query or user_query in ["top", "stats"]:
-        logger.info("Лидерборд от %s", query.from_user.id)
-
-        # Запрашиваем топ-10 и излюбленные теги пользователя
-        top_users = await asyncio.to_thread(database.get_leaderboard, 10)
-        fav_tags = await asyncio.to_thread(
-            database.get_user_favorite_tags, query.from_user.id,
-        )
-
-        # Формируем текст лидерборда
-        if not top_users:
-            lb_text = (
-                "🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"
-                "Пока никого нет. Начни дрочить первым! 🔞"
-            )
-        else:
-            lines = ["🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"]
-            for i, u in enumerate(top_users, 1):
-                name = u["username"] or f"User #{u['user_id']}"
-                sperm = u["total_sperm"]
-                medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-                lines.append(f"{medal} <b>{name}</b> — {sperm} мл спермы")
-            lb_text = "\n".join(lines)
-
-        # Прикрепляем персональный блок
-        if fav_tags:
-            tags_str = ", ".join(
-                f"{t['tag']} ({t['count']} раз)" for t in fav_tags
-            )
-            lb_text += (
-                "\n\n------------------------\n"
-                "твоя статистика:\n"
-                f"📊 Твои излюбленные теги: {tags_str}"
-            )
-        else:
-            lb_text += (
-                "\n\n------------------------\n"
-                "твоя статистика:\n"
-                "📊 Ты ещё не дрочил, твоя история пуста."
-            )
-
-        article = InlineQueryResultArticle(
-            id=secrets.token_hex(8),
-            title="🏆 ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА",
-            description="Посмотреть таблицу лидеров",
-            input_message_content=InputTextMessageContent(
-                message_text=lb_text,
-                parse_mode="HTML",
-            ),
-        )
-        await query.answer(
-            results=[article],
-            cache_time=0,
-            is_personal=True,
-        )
-        return  # ← прерываем, НЕ идём в API за картинками
-
-    # Шаг 3: else — обычный инлайн-запрос (теги, фото, гифки)
     creator_id = query.from_user.id
+
+    # ── short-circuit: top / stats ──────────────────────────────
+    if user_query in ("top", "stats"):
+        await _answer_leaderboard(query, creator_id)
+        return
+
+    # ── Пустой запрос → лидерборд + все теги ───────────────────
+    if not user_query:
+        await _answer_leaderboard_with_tags(query, creator_id)
+        return
+
+    # ── Конкретный тег или произвольный запрос → верификация ────
     tag = config.validate_tag(query.query)
     logger.info("Inline-запрос от %s: тег='%s'", creator_id, tag)
 
     tag_display = tag or "random"
-    cb_verify = f"verify_18:{creator_id}:{tag_display}"
+    article = _make_verify_article(creator_id, tag_display)
 
-    article = InlineQueryResultArticle(
+    await query.answer(
+        results=[article],
+        cache_time=0,
+        is_personal=True,
+        switch_pm_text="📋 Список тегов",
+        switch_pm_parameter="tags",
+    )
+
+
+def _make_verify_article(creator_id: int, tag_display: str) -> InlineQueryResultArticle:
+    """Собирает InlineQueryResultArticle с кнопкой верификации для tag_display."""
+    return InlineQueryResultArticle(
         id=secrets.token_hex(8),
         title=f"🔞 Подрочить на {tag_display}",
         description="Требуется подтверждение 18+",
@@ -207,15 +170,87 @@ async def handle_inline_query(query: InlineQuery) -> None:
                 [
                     InlineKeyboardButton(
                         text="Мне есть 18 лет ✅",
-                        callback_data=cb_verify,
+                        callback_data=f"verify_18:{creator_id}:{tag_display}",
                     ),
                 ]
             ]
         ),
     )
 
+
+async def _build_leaderboard_text(user_id: int) -> str:
+    """Формирует текст лидерборда + персональная статистика."""
+    top_users = await asyncio.to_thread(database.get_leaderboard, 10)
+    fav_tags = await asyncio.to_thread(database.get_user_favorite_tags, user_id)
+
+    if not top_users:
+        parts = [
+            "🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"
+            "Пока никого нет. Начни дрочить первым! 🔞"
+        ]
+    else:
+        lines = ["🏆 <b>ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА</b>\n\n"]
+        for i, u in enumerate(top_users, 1):
+            name = u["username"] or f"User #{u['user_id']}"
+            sperm = u["total_sperm"]
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+            lines.append(f"{medal} <b>{name}</b> — {sperm} мл спермы")
+        parts = ["\n".join(lines)]
+
+    if fav_tags:
+        tags_str = ", ".join(f"{t['tag']} ({t['count']} раз)" for t in fav_tags)
+        parts.append(
+            "\n\n------------------------\n"
+            "твоя статистика:\n"
+            f"📊 Твои излюбленные теги: {tags_str}"
+        )
+    else:
+        parts.append(
+            "\n\n------------------------\n"
+            "твоя статистика:\n"
+            "📊 Ты ещё не дрочил, твоя история пуста."
+        )
+
+    return "".join(parts)
+
+
+async def _answer_leaderboard(query: InlineQuery, user_id: int) -> None:
+    """Отвечает только лидербордом (один результат)."""
+    text = await _build_leaderboard_text(user_id)
+    article = InlineQueryResultArticle(
+        id=secrets.token_hex(8),
+        title="🏆 ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА",
+        description="Посмотреть таблицу лидеров",
+        input_message_content=InputTextMessageContent(
+            message_text=text,
+            parse_mode="HTML",
+        ),
+    )
+    await query.answer(results=[article], cache_time=0, is_personal=True)
+
+
+async def _answer_leaderboard_with_tags(query: InlineQuery, user_id: int) -> None:
+    """Отвечает лидербордом + списком всех тегов."""
+    # Лидерборд
+    text = await _build_leaderboard_text(user_id)
+    results: list[InlineQueryResultArticle] = [
+        InlineQueryResultArticle(
+            id=secrets.token_hex(8),
+            title="🏆 ТОП-10 САМЫХ ШПЕРМАПРИЕМНИКОВ ЧАТА",
+            description="Посмотреть таблицу лидеров",
+            input_message_content=InputTextMessageContent(
+                message_text=text,
+                parse_mode="HTML",
+            ),
+        ),
+    ]
+
+    # Все доступные теги
+    for tag in sorted(config.VALID_TAGS):
+        results.append(_make_verify_article(user_id, tag))
+
     await query.answer(
-        results=[article],
+        results=results,
         cache_time=0,
         is_personal=True,
         switch_pm_text="📋 Список тегов",
