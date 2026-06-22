@@ -1,5 +1,4 @@
-2026-06-22 15:04:36,799 [INFO] __main__: Бот запущен. Ожидание инлайн-запросов...
-2026-06-22 15:04:36,799 [INFO] aiogram.dispatcher: Start polling
-2026-06-22 15:04:37,325 [INFO] aiogram.dispatcher: Run polling for bot @Waifulinuxbot id=8953158347 - 'гайды - WAIFU OS'
-2026-06-22 15:04:37,548 [INFO] __main__: Callback от 8964334068: новый контент, тег='None'
-2026-06-22 15:04:38,480 [INFO] aiogram.event: Update id=558240680 is handled. Duration 933 ms by bot id=8953158347
+2026-06-22 15:08:41,939 [INFO] __main__: Бот запущен. Ожидание инлайн-запросов...
+2026-06-22 15:08:41,940 [INFO] aiogram.dispatcher: Start polling
+2026-06-22 15:08:42,742 [INFO] aiogram.dispatcher: Run polling for bot @Waifulinuxbot id=8953158347 - 'гайды - WAIFU OS'
+2026-06-22 15:08:56,601 [INFO] __main__: Inline-запрос от 1489942708: тег='None'

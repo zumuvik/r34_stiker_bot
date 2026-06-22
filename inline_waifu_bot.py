@@ -25,6 +25,7 @@ import secrets
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
 from aiogram.types import (
     InlineQuery,
     InlineQueryResultPhoto,
@@ -32,6 +33,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
     InputMediaPhoto,
+    Message,
 )
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -224,12 +226,16 @@ async def handle_inline_query(query: InlineQuery) -> None:
         reply_markup=build_markup(tag),
         caption=(
             f"<b>NSFW Anime</b>\n"
-            f"Тег: {tag or 'random'}\n"
-            f"<i>Нажми «Давай ещё!» для новой картинки</i>"
+            f"Тег: {tag or 'random'}"
         ),
     )
 
-    await query.answer(results=[result], cache_time=0)
+    await query.answer(
+        results=[result],
+        cache_time=0,
+        switch_pm_text="📋 Список тегов",
+        switch_pm_parameter="tags",
+    )
 
 
 # ─────────────────── Callback Query Handler ───────────────────
@@ -261,8 +267,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         media=image_url,
         caption=(
             f"<b>NSFW Anime</b>\n"
-            f"Тег: {tag or 'random'}\n"
-            f"<i>Нажми «Давай ещё!» для новой картинки</i>"
+            f"Тег: {tag or 'random'}"
         ),
     )
 
@@ -287,6 +292,21 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
             "Не удалось обновить картинку. Попробуйте ещё раз.",
             show_alert=True,
         )
+
+
+# ─────────────────── Command /start — список тегов ───────────────────
+
+
+@dp.message(CommandStart())
+async def handle_start(message: Message) -> None:
+    """Отправляет список доступных тегов при /start."""
+    tags_text = (
+        "🏷 <b>Доступные теги</b>\n\n"
+        + "\n".join(f"• <code>{t}</code>" for t in sorted(VALID_TAGS))
+        + "\n\n"
+        "Просто напиши <code>@Waifulinuxbot &lt;тег&gt;</code> в любом чате."
+    )
+    await message.answer(tags_text)
 
 
 # ─────────────────── Точка входа ───────────────────

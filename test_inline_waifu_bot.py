@@ -374,6 +374,31 @@ class TestHandleInlineQuery:
         assert result.photo_url == bot.FALLBACK_IMAGE_URL
         assert result.thumbnail_url == bot.FALLBACK_IMAGE_URL
 
+    @pytest.mark.asyncio
+    async def test_caption_does_not_contain_davai_eshe(self):
+        """Текст про «Давай ещё!» удалён из caption."""
+        query = self._make_query("maid")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
+        assert "Давай ещё" not in result.caption
+        assert "новая картинка" not in result.caption
+
+    @pytest.mark.asyncio
+    async def test_switch_pm_text_and_parameter(self):
+        """Проверяем switch_pm_text и switch_pm_parameter."""
+        query = self._make_query("maid")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        assert kwargs.get("switch_pm_text") == "📋 Список тегов"
+        assert kwargs.get("switch_pm_parameter") == "tags"
+
 
 # ─────────────────────────────────────────────────
 #  handle_more_callback
