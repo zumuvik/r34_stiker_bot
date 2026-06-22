@@ -49,14 +49,30 @@ def init_db() -> None:
     logger.info("Database initialised at %s", DB_PATH)
 
 
-def update_user_sperm(user_id: int, username: str, delta: int) -> None:
+def update_user_sperm(user_id: int, username: str, delta: int) -> int:
     """
     Добавляет (или вычитает) ``delta`` к ``total_sperm`` пользователя.
 
-    При первом вызове создаёт запись; при повторных — обновляет
-    username и накапливает total_sperm.
+    Пол в нуле — уйти в минус нельзя. Если ``delta`` отрицательная
+    и у пользователя недостаточно спермы, дельта обрезается до нуля.
+
+    Returns:
+        Фактический дельта, который был применён (может отличаться
+        от запрошенного, если сработал пол).
     """
     conn = get_connection()
+
+    # Текущий баланс (0, если записи нет)
+    row = conn.execute(
+        "SELECT total_sperm FROM user_stats WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    current = row["total_sperm"] if row else 0
+
+    # Обрезаем отрицательную дельту, чтобы не уйти ниже нуля
+    if delta < 0 and current + delta < 0:
+        delta = -current  # ровно в ноль
+
     conn.execute(
         """
         INSERT INTO user_stats (user_id, username, total_sperm)
@@ -68,6 +84,7 @@ def update_user_sperm(user_id: int, username: str, delta: int) -> None:
         (user_id, username, delta),
     )
     conn.commit()
+    return delta
 
 
 def get_leaderboard(limit: int = 10) -> list[dict]:

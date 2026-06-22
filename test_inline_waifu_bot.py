@@ -514,9 +514,12 @@ class TestHandleVerifyCallback:
 
     @pytest.fixture(autouse=True)
     def _patch_db(self):
-        """Старые тесты не тестируют статистику — мокаем запись в БД."""
+        """update_user_sperm возвращает int (не MagicMock)."""
         with (
-            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch(
+                "inline_waifu_bot.handlers.database.update_user_sperm",
+                side_effect=lambda _uid, _uname, delta: delta,
+            ),
             patch("inline_waifu_bot.handlers.database.increment_tag_count"),
         ):
             yield
@@ -725,9 +728,12 @@ class TestHandleMoreCallback:
 
     @pytest.fixture(autouse=True)
     def _patch_db(self):
-        """Старые тесты не тестируют статистику — мокаем запись в БД."""
+        """update_user_sperm возвращает int (не MagicMock)."""
         with (
-            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch(
+                "inline_waifu_bot.handlers.database.update_user_sperm",
+                side_effect=lambda _uid, _uname, delta: delta,
+            ),
             patch("inline_waifu_bot.handlers.database.increment_tag_count"),
         ):
             yield
@@ -1196,14 +1202,18 @@ class TestDatabase:
         assert top3[0]["total_sperm"] == 50
         assert top3[-1]["total_sperm"] == 30
 
-    def test_negative_sperm_allowed(self):
-        """total_sperm может уходить в минус."""
-        bot.update_user_sperm(1, "unlucky", -100)
+    def test_negative_capped_at_zero(self):
+        """total_sperm не уходит в минус — пол в нуле."""
+        # Сначала +10
+        bot.update_user_sperm(1, "unlucky", 10)
+        # Потом -25, но в минус уйти нельзя — срезается до 0
+        actual = bot.update_user_sperm(1, "unlucky", -25)
         conn = bot.get_connection()
         row = conn.execute(
             "SELECT total_sperm FROM user_stats WHERE user_id=?", (1,),
         ).fetchone()
-        assert row["total_sperm"] == -100
+        assert row["total_sperm"] == 0
+        assert actual == -10, f"expected -10, got {actual}"  # 10 → 0, фактически -10
 
 
 # ─────────────────────────────────────────────────
@@ -1338,9 +1348,9 @@ class TestStatsInVerifyCallback:
         """После верификации caption заканчивается строкой статистики."""
         cb = self._make_callback("waifu")
         with (
-            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.update_user_sperm", return_value=25),
             patch("inline_waifu_bot.handlers.database.increment_tag_count"),
-            patch("secrets.randbelow", side_effect=[10, 0]),  # delta=11, positive
+            patch("random.choices", return_value=[25]),
             patch("secrets.choice", return_value="Вы подододрочель"),
         ):
             with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
@@ -1350,16 +1360,16 @@ class TestStatsInVerifyCallback:
         caption = kwargs["media"].caption
         assert "Вы подододрочель" in caption
         assert "✅" in caption
-        assert "+11 мл спермы" in caption
+        assert "+25 мл спермы" in caption
 
     @pytest.mark.asyncio
     async def test_negative_stats_format(self, mock_bot_edit):
         """Отрицательная сперма: ❌ и -N."""
         cb = self._make_callback("ero")
         with (
-            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.update_user_sperm", return_value=-10),
             patch("inline_waifu_bot.handlers.database.increment_tag_count"),
-            patch("secrets.randbelow", side_effect=[5, 1]),  # delta=6, negative
+            patch("random.choices", return_value=[-10]),
             patch("secrets.choice", return_value="У тебя сегодня отсох хуец."),
         ):
             with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
@@ -1369,23 +1379,23 @@ class TestStatsInVerifyCallback:
         caption = kwargs["media"].caption
         assert "У тебя сегодня отсох хуец." in caption
         assert "❌" in caption
-        assert "-6 мл спермы" in caption
+        assert "-10 мл спермы" in caption
 
     @pytest.mark.asyncio
     async def test_delta_calls_db(self, mock_bot_edit):
         """update_user_sperm вызывается с корректными аргументами."""
         cb = self._make_callback("maid")
-        with patch("inline_waifu_bot.handlers.database.update_user_sperm") as mock_upd:
+        with patch("inline_waifu_bot.handlers.database.update_user_sperm", return_value=10) as mock_upd:
             with (
                 patch("inline_waifu_bot.handlers.database.increment_tag_count"),
-                patch("secrets.randbelow", return_value=0),   # delta=1, positive
+                patch("random.choices", return_value=[10]),
                 patch("secrets.choice", return_value="Вы подододрочель"),
             ):
                 with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
                     await bot.handle_verify_callback(cb)
 
         # sync-функция, вызвана через asyncio.to_thread
-        mock_upd.assert_called_once_with(12345, "test_user", 1)
+        mock_upd.assert_called_once_with(12345, "test_user", 10)
 
     @pytest.mark.asyncio
     async def test_fallback_also_has_stats(self, mock_bot_edit):
@@ -1396,9 +1406,9 @@ class TestStatsInVerifyCallback:
             None,
         ]
         with (
-            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.update_user_sperm", return_value=25),
             patch("inline_waifu_bot.handlers.database.increment_tag_count"),
-            patch("secrets.randbelow", side_effect=[3, 0]),
+            patch("random.choices", return_value=[25]),
             patch("secrets.choice", return_value="Вы подододрочель"),
         ):
             with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
@@ -1408,7 +1418,7 @@ class TestStatsInVerifyCallback:
         caption = second_call.kwargs["media"].caption
         assert "Вы подододрочель" in caption
         assert "✅" in caption
-        assert "+4 мл спермы" in caption  # randbelow(50)=3 → delta=4
+        assert "+25 мл спермы" in caption
 
 
 # ─────────────────────────────────────────────────
@@ -1450,9 +1460,9 @@ class TestStatsInMoreCallback:
     async def test_caption_includes_stats_line(self, mock_bot_edit):
         cb = self._make_callback("maid")
         with (
-            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.update_user_sperm", return_value=50),
             patch("inline_waifu_bot.handlers.database.increment_tag_count"),
-            patch("secrets.randbelow", side_effect=[7, 0]),
+            patch("random.choices", return_value=[50]),
             patch("secrets.choice", return_value="Вы выдрочили яца"),
         ):
             with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
@@ -1462,7 +1472,7 @@ class TestStatsInMoreCallback:
         caption = kwargs["media"].caption
         assert "Вы выдрочили яца" in caption
         assert "✅" in caption
-        assert "+8 мл спермы" in caption
+        assert "+50 мл спермы" in caption
 
     @pytest.mark.asyncio
     async def test_more_fallback_has_stats(self, mock_bot_edit):
@@ -1472,9 +1482,9 @@ class TestStatsInMoreCallback:
             None,
         ]
         with (
-            patch("inline_waifu_bot.handlers.database.update_user_sperm"),
+            patch("inline_waifu_bot.handlers.database.update_user_sperm", return_value=-10),
             patch("inline_waifu_bot.handlers.database.increment_tag_count"),
-            patch("secrets.randbelow", side_effect=[2, 1]),
+            patch("random.choices", return_value=[-10]),
             patch("secrets.choice", return_value="У вас отвалился хуй"),
         ):
             with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
@@ -1484,7 +1494,7 @@ class TestStatsInMoreCallback:
         caption = second_call.kwargs["media"].caption
         assert "У вас отвалился хуй" in caption
         assert "❌" in caption
-        assert "-3 мл спермы" in caption
+        assert "-10 мл спермы" in caption
 
 
 # ─────────────────────────────────────────────────

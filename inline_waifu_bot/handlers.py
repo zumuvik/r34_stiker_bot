@@ -85,28 +85,63 @@ async def _edit_message(
 
 async def _generate_stats(user_id: int, username: str | None) -> str:
     """
-    Генерирует случайное изменение спермы (+/- 1-50), обновляет БД
+    Генерирует изменение спермы по тирам с весами, обновляет БД
     и возвращает строку формата::
 
         {фраза} | {✅/❌} | {+/-X мл спермы}
-    """
-    delta = secrets.randbelow(50) + 1          # 1–50
-    is_positive = secrets.randbelow(2) == 0     # 50/50
 
-    if is_positive:
-        phrase = secrets.choice(config.POSITIVE_PHRASES)
+    Правила:
+    - фиксированные суммы, без рандома
+    - положительных исходов ~80%, отрицательных ~20%
+    - джекпот +500 с шансом 5%
+    - пол в нуле — уйти в минус нельзя
+    """
+    # Тиры: (дельта, вес)
+    TIERS: list[tuple[int, int]] = [
+        (10,   30),   # +10  — часто
+        (25,   30),   # +25  — часто
+        (50,   15),   # +50  — нечасто
+        (500,   5),   # +500 — джекпот, редко
+        (-10,  12),   # -10  — редко
+        (-25,   8),   # -25  — очень редко
+    ]
+
+    # Выбираем дельту по весам
+    import random as _random
+    raw_delta = _random.choices(
+        [d for d, _ in TIERS],
+        weights=[w for _, w in TIERS],
+        k=1,
+    )[0]
+
+    # Определяем фразу и знак
+    if raw_delta > 0:
+        if raw_delta >= 500:
+            phrase = "ДЖЕКПОТ! Сперма с тебя прёт фонтаном"
+        else:
+            phrase = secrets.choice(config.POSITIVE_PHRASES)
         sign = "✅"
-        delta_str = f"+{delta}"
+        delta_str = f"+{raw_delta}"
+        applied_delta = raw_delta
     else:
         phrase = secrets.choice(config.NEGATIVE_PHRASES)
         sign = "❌"
-        delta_str = f"-{delta}"
-        delta = -delta                          # физический дельта для БД
+        delta_str = f"{raw_delta}"
+        applied_delta = raw_delta
 
-    # Обновляем БД в пуле потоков (SQLite — синхронный).
-    await asyncio.to_thread(
-        database.update_user_sperm, user_id, username or "", delta,
+    # Обновляем БД (с полом в нуле).
+    actual_delta = await asyncio.to_thread(
+        database.update_user_sperm, user_id, username or "", applied_delta,
     )
+
+    # Если пол срезал дельту — показываем реальную
+    if actual_delta != applied_delta:
+        if actual_delta > 0:
+            delta_str = f"+{actual_delta}"
+        elif actual_delta == 0:
+            delta_str = "0"
+        else:
+            delta_str = str(actual_delta)
 
     return f"{phrase} | {sign} | {delta_str} мл спермы"
 
