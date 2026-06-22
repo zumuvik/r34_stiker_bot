@@ -119,14 +119,14 @@ async def handle_inline_query(query: InlineQuery) -> None:
     """
     Обрабатывает инлайн-запрос: ``@bot_username [тег]``.
 
-    Возвращает ``InlineQueryResultArticle`` — текст-заглушку с кнопкой
-    верификации. В callback_data зашит ``creator_id``.
+    - Пустой запрос / ``top`` / ``stats`` → лидерборд.
+    - Всё остальное → ``InlineQueryResultArticle`` с кнопкой верификации.
     """
     # Шаг 1: очищаем запрос от пробелов, приводим к нижнему регистру
     user_query = query.query.strip().lower()
 
-    # Шаг 2: short-circuit — top / stats
-    if user_query in ["top", "stats"]:
+    # Шаг 2: лидерборд при пустом запросе или по "top"/"stats"
+    if not user_query or user_query in ["top", "stats"]:
         logger.info("Лидерборд от %s", query.from_user.id)
 
         # Запрашиваем топ-10 и излюбленные теги пользователя

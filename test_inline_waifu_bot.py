@@ -339,13 +339,15 @@ class TestHandleInlineQuery:
         assert "Подрочить" in result.title
 
     @pytest.mark.asyncio
-    async def test_title_shows_random_when_no_tag(self):
+    async def test_title_shows_leaderboard_when_no_query(self):
+        """Пустой запрос → лидерборд (не verify-article)."""
         query = self._make_query("")
         await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
-        assert "random" in result.title
+        assert "ТОП-10" in result.title
+        assert "ШПЕРМАПРИЕМНИКОВ" in result.title
 
     @pytest.mark.asyncio
     async def test_title_shows_random_when_invalid_tag(self):
@@ -380,13 +382,16 @@ class TestHandleInlineQuery:
         assert "maid" in result.input_message_content.message_text
 
     @pytest.mark.asyncio
-    async def test_input_message_content_random_when_no_tag(self):
+    async def test_input_message_content_leaderboard_when_no_query(self):
+        """Пустой запрос → контент лидерборда (не verify-заглушка)."""
         query = self._make_query("")
         await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
-        assert "random" in result.input_message_content.message_text
+        text = result.input_message_content.message_text
+        assert "ТОП-10" in text
+        assert "статистика" in text
 
     # ── Reply markup (кнопка верификации) ───────────────────
 
@@ -425,14 +430,14 @@ class TestHandleInlineQuery:
         assert btn.callback_data == "verify_18:12345:maid"
 
     @pytest.mark.asyncio
-    async def test_verify_callback_random_when_no_tag(self):
+    async def test_leaderboard_has_no_verify_button_when_no_query(self):
+        """Пустой запрос → лидерборд без кнопки верификации."""
         query = self._make_query("")
         await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
-        btn = result.reply_markup.inline_keyboard[0][0]
-        assert btn.callback_data == "verify_18:12345:random"
+        assert result.reply_markup is None
 
     @pytest.mark.asyncio
     async def test_verify_callback_random_when_invalid_tag(self):
