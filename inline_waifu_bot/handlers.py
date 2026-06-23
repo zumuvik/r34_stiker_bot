@@ -36,6 +36,7 @@ from .keyboard import build_markup
 
 logger = logging.getLogger(__name__)
 
+
 # Хранилище времени последнего нажатия кнопки для каждого пользователя.
 _cooldowns: dict[int, float] = {}
 
@@ -50,7 +51,13 @@ def _build_media(
 ) -> InputMediaPhoto | InputMediaVideo:
     """
     Создаёт ``InputMediaPhoto`` или ``InputMediaVideo`` с has_spoiler=True.
+
+    Если URL заканчивается на ``.gif``, всегда использует ``InputMediaVideo``
+    (даже если провайдер вернул ``media_type="photo"``), чтобы Telegram
+    корректно применил спойлер к анимации.
     """
+    if media_url.lower().endswith(".gif"):
+        return InputMediaVideo(media=media_url, caption=caption, has_spoiler=True)
     cls = InputMediaVideo if media_type == "video" else InputMediaPhoto
     return cls(media=media_url, caption=caption, has_spoiler=True)
 
@@ -177,9 +184,8 @@ async def handle_inline_query(query: InlineQuery) -> None:
 
     # ── Конкретный тег или произвольный запрос → верификация ────
     tag = config.validate_tag(query.query)
-    logger.info("Inline-запрос от %s: тег='%s'", creator_id, tag)
-
     tag_display = tag or "random"
+    logger.info("[u:%s] inline query: тег='%s'", creator_id, tag)
     article = _make_verify_article(creator_id, tag_display)
 
     await query.answer(
@@ -193,7 +199,7 @@ def _make_verify_article(creator_id: int, tag_display: str) -> InlineQueryResult
     """Собирает InlineQueryResultArticle с кнопкой верификации для tag_display."""
     return InlineQueryResultArticle(
         id=secrets.token_hex(8),
-        title=f"🔞 Подрочить на {tag_display}",
+        title=f"🔞 Подрочить на {config.get_tag_label(tag_display)}",
         description="Требуется подтверждение 18+",
         input_message_content=InputTextMessageContent(
             message_text=(
@@ -330,14 +336,14 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
         creator_id_str, tag_str = payload.split(":", 1)
         creator_id = int(creator_id_str)
     except (ValueError, IndexError):
-        logger.warning("Невалидный callback_data: %s", callback.data)
+        logger.warning("[u:%s] verify: invalid callback_data: %s", callback.from_user.id, callback.data)
         await callback.answer("Ошибка данных", show_alert=True)
         return
 
     clicker_id = callback.from_user.id
     if clicker_id != creator_id:
         logger.info(
-            "Чужой нажал verify: %s (создатель %s)", clicker_id, creator_id,
+            "[u:%s] verify: чужой (owner=%s)", clicker_id, creator_id,
         )
         await callback.answer(
             "Это сообщение создал другой пользователь. "
@@ -349,9 +355,10 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     tag: str | None = tag_str if tag_str != "random" else None
     tag_display = tag or "random"
 
+    t0 = time.monotonic()
     logger.info(
-        "Verify 18+ от %s: тег='%s', inline=%s",
-        creator_id, tag, bool(callback.inline_message_id),
+        "[u:%s] verify: start, тег='%s'",
+        creator_id, tag,
     )
 
     await callback.answer()
@@ -360,6 +367,11 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     stats_line = await _generate_stats(creator_id, callback.from_user.username)
 
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
+    fetch_elapsed = time.monotonic() - t0
+    logger.info(
+        "[u:%s] verify 18+ content: тег='%s' → type=%s fetch=%.2fs",
+        creator_id, tag, media_type, fetch_elapsed,
+    )
     # Трекинг реального тега (не "random") в БД
     await asyncio.to_thread(database.increment_tag_count, creator_id, display_tag)
     caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
@@ -369,11 +381,11 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
         await _edit_message(callback, media_obj, build_markup(tag, creator_id))
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc):
-            logger.info("Verify — контент не изменился, пропускаем.")
+            logger.info("[u:%s] verify: content unchanged, skipping", creator_id)
             return
         logger.warning(
-            "Verify media (type=%s) failed edit: %s. Falling back to cat photo.",
-            media_type, exc,
+            "[u:%s] verify edit failed (type=%s): %s → cat fallback",
+            creator_id, media_type, exc,
         )
         fallback = InputMediaPhoto(
             media=config.FALLBACK_IMAGE_URL,
@@ -386,7 +398,8 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
         await _edit_message(callback, fallback, build_markup(tag, creator_id))
     except Exception as exc:
         logger.error(
-            "Не удалось показать контент после верификации: %s", exc
+            "[u:%s] verify: unexpected error: %s: %s",
+            creator_id, type(exc).__name__, exc,
         )
 
 
@@ -408,7 +421,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         creator_id_str, tag_str = payload.split(":", 1)
         creator_id = int(creator_id_str)
     except (ValueError, IndexError):
-        logger.warning("Невалидный callback_data: %s", callback.data)
+        logger.warning("[u:%s] more: invalid callback_data: %s", callback.from_user.id, callback.data)
         await callback.answer("Ошибка данных", show_alert=True)
         return
 
@@ -418,7 +431,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     clicker_id = callback.from_user.id
     if clicker_id != creator_id:
         logger.info(
-            "Чужой нажал more: %s (создатель %s)", clicker_id, creator_id,
+            "[u:%s] more: чужой (owner=%s)", clicker_id, creator_id,
         )
         await callback.answer(
             "Это сообщение создал другой пользователь. "
@@ -432,7 +445,7 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     last = _cooldowns.get(clicker_id, 0.0)
     if now - last < config.BUTTON_COOLDOWN:
         remaining = math.ceil(config.BUTTON_COOLDOWN - (now - last))
-        logger.info("Кд у %s: осталось %dс", clicker_id, remaining)
+        logger.debug("[u:%s] more: cooldown %ds remaining", clicker_id, remaining)
         await callback.answer(
             f"⏳ Подожди {remaining} с перед следующим нажатием.",
             show_alert=True,
@@ -441,14 +454,20 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
 
     _cooldowns[clicker_id] = now
 
+    t0 = time.monotonic()
     logger.info(
-        "More callback от %s: новый контент, тег='%s'",
+        "[u:%s] more: тег='%s'",
         clicker_id, tag,
     )
 
     stats_line = await _generate_stats(clicker_id, callback.from_user.username)
 
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
+    fetch_elapsed = time.monotonic() - t0
+    logger.info(
+        "[u:%s] more content: тег='%s' → type=%s fetch=%.2fs",
+        clicker_id, tag, media_type, fetch_elapsed,
+    )
     # Трекинг реального тега (не "random") в БД
     await asyncio.to_thread(database.increment_tag_count, clicker_id, display_tag)
     caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
@@ -459,12 +478,12 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         await callback.answer()
     except TelegramBadRequest as exc:
         if "message is not modified" in str(exc):
-            logger.info("More — контент не изменился, пропускаем.")
+            logger.debug("[u:%s] more: content unchanged", clicker_id)
             await callback.answer()
             return
         logger.warning(
-            "More media (type=%s) failed edit: %s. Falling back to cat photo.",
-            media_type, exc,
+            "[u:%s] more edit failed (type=%s): %s → cat fallback",
+            clicker_id, media_type, exc,
         )
         fallback = InputMediaPhoto(
             media=config.FALLBACK_IMAGE_URL,
@@ -478,7 +497,10 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         await _edit_message(callback, fallback, build_markup(tag, creator_id))
         await callback.answer()
     except Exception as exc:
-        logger.error("Не удалось отредактировать сообщение: %s", exc)
+        logger.error(
+            "[u:%s] more: unexpected error: %s: %s",
+            clicker_id, type(exc).__name__, exc,
+        )
         await callback.answer(
             "Не удалось обновить картинку. Попробуйте ещё раз.",
             show_alert=True,
@@ -493,7 +515,10 @@ async def handle_start(message: Message) -> None:
     """Отправляет список доступных тегов при /start."""
     tags_text = (
         "🏷 <b>Доступные теги</b>\n\n"
-        + "\n".join(f"• <code>{t}</code>" for t in sorted(config.VALID_TAGS))
+        + "\n".join(
+            f"• <code>{t}</code>{'  (' + config.TAG_LABELS[t] + ')' if t in config.TAG_LABELS else ''}"
+            for t in sorted(config.VALID_TAGS)
+        )
         + "\n\n"
         "Просто напиши <code>@Waifulinuxbot &lt;тег&gt;</code> в любом чате."
     )

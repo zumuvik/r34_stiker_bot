@@ -105,17 +105,80 @@ VIDEO_ENDPOINTS: dict[str, str] = {
 # поэтому не попадают в random-выборку).
 FEMBOY_TAGS: frozenset[str] = frozenset({"femboy"})
 FURRY_TAGS: frozenset[str] = frozenset({"furry"})
+ANTHRO_TAGS: frozenset[str] = frozenset({"anthro"})
+FURFEM_TAGS: frozenset[str] = frozenset({"furfem"})
+FEET_TAGS: frozenset[str] = frozenset({"feet", "heels"})
+UMAMUSUME_TAGS: frozenset[str] = frozenset({"umamusume"})
 
 # API-эндпоинты для новых провайдеров.
-FEMBOY_API_URL: str = "https://api.waifu.pics/nsfw/trap"
-"""waifu.pics — femboy/trap NSFW фото."""
+E621_API_URL: str = "https://e621.net/posts.json"
+"""Базовый эндпоинт e621.net API."""
 
-FURRY_API_URL: str = "https://api.nekosapi.com/v4/images/random"
-"""Nekos API v4 — furry NSFW фото (с тегом furry + rating=explicit)."""
+FEMBOY_API_URL: str = E621_API_URL
+"""e621.net — femboy NSFW фото (тег: femboy)."""
+
+FURRY_API_URL: str = E621_API_URL
+"""e621.net — furry NSFW фото (тег: anthro)."""
+
+E621_USER_AGENT: str = "WaifuBot/1.0 (by @zumuvik; discord)"
+"""User-Agent для e621 API (обязателен по ToS e621)."""
+
+E621_API_TAGS: dict[str, str] = {
+    "femboy": "femboy rating:e",
+    "furry":  "anthro rating:e",
+    "anthro": "anthro rating:e -futanari -dickgirl",
+    "furfem": "female anthro rating:e -futanari -dickgirl -intersex -fat -chubby -obese -overweight",
+    "umamusume": "umamusume rating:e -futanari -dickgirl -fat -chubby -obese -overweight -thick -big_belly",
+    # Fallback для feet/heels если yande.re лёг (с исключением фури).
+    "feet":  "feet rating:explicit -loli -shota -male -anthro -furry",
+    "heels": "high_heels rating:explicit -loli -shota -male -anthro -furry",
+}
+"""Маппинг тегов бота → строки поиска e621."""
+
+# Yande.re — аниме-бора для ножек/пяток (человеческие девочки, не фури).
+YANDE_RE_API_URL: str = "https://yande.re/post.json"
+"""Базовый эндпоинт Yande.re API."""
+
+YANDE_RE_TAGS: dict[str, str] = {
+    "feet":   "feet rating:explicit -loli -shota -male",
+    "heels":  "high_heels rating:explicit -loli -shota -male",
+    "femboy": "femboy rating:explicit -loli -shota -male",
+}
+"""Маппинг тегов бота → строки поиска yande.re (для feet/heels)."""
+
+# Добавим umamusume в маппинг Yande/e621
+YANDE_RE_TAGS.update({
+    "umamusume": "umamusume rating:explicit -loli -shota -male -trap -futanari -dickgirl -fat -chubby -obese -overweight -thick",
+})
+
+# Rule34.xxx — универсальный fallback для всех тегов (есть GIF).
+RULE34_API_URL: str = "https://api.rule34.xxx/index.php?page=dapi&s=post&q=index"
+"""Базовый эндпоинт Rule34.xxx API."""
+
+RULE34_API_KEY: str | None = os.getenv("RULE34_API_KEY")
+"""API ключ Rule34.xxx (из .env)."""
+
+RULE34_USER_ID: str | None = os.getenv("RULE34_USER_ID")
+"""User ID Rule34.xxx (из .env)."""
+
+RULE34_API_TAGS: dict[str, str] = {
+    "femboy": "femboy rating:explicit -loli -shota",
+    "furry": "anthro rating:explicit",
+    "anthro": "anthro rating:explicit -futanari -dickgirl",
+    "furfem": "female anthro rating:explicit -futanari -dickgirl -intersex -fat -chubby -obese -overweight",
+    "feet": "feet rating:explicit -loli -shota -male -anthro -furry",
+    "heels": "high_heels rating:explicit -loli -shota -male -anthro -furry",
+    "umamusume": "umamusume rating:explicit -loli -shota -male -trap -futanari -dickgirl -fat -chubby -obese -overweight -thick",
+}
+"""Маппинг тегов бота → строки поиска rule34.xxx."""
 
 # Объединённое множество (для валидации).
-VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS | FEMBOY_TAGS | FURRY_TAGS)
+VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS | FEMBOY_TAGS | FURRY_TAGS | ANTHRO_TAGS | FURFEM_TAGS | FEET_TAGS | UMAMUSUME_TAGS)
 
+# Человекочитаемые названия тегов для меню.
+TAG_LABELS: dict[str, str] = {
+    "umamusume": "Umamusume Pretty Derby",
+}
 
 # ─────────────────── Хелперы ───────────────────
 
@@ -134,6 +197,14 @@ def validate_tag(raw: str) -> str | None:
     return tag if tag in VALID_TAGS else None
 
 
+def get_tag_label(tag: str) -> str:
+    """Возвращает человекочитаемое название тега для меню.
+
+    Если для тега не задано отображаемое имя — возвращает сам тег.
+    """
+    return TAG_LABELS.get(tag, tag)
+
+
 def is_video_tag(tag: str | None) -> bool:
     """Является ли тег видео-тегом (Reddit)."""
     if tag is None:
@@ -149,17 +220,48 @@ def is_photo_tag(tag: str | None) -> bool:
 
 
 def is_femboy_tag(tag: str | None) -> bool:
-    """Является ли тег femboy-тегом (waifu.pics)."""
+    """Является ли тег femboy-тегом (e621)."""
     if tag is None:
         return False
     return tag in FEMBOY_TAGS
 
 
 def is_furry_tag(tag: str | None) -> bool:
-    """Является ли тег furry-тегом (Nekos API v4)."""
+    """Является ли тег furry-тегом (e621)."""
     if tag is None:
         return False
     return tag in FURRY_TAGS
+
+
+def is_furfem_tag(tag: str | None) -> bool:
+    """Является ли тег furfem-тегом (e621, женские furry, нежирные, без футы)."""
+    if tag is None:
+        return False
+    return tag in FURFEM_TAGS
+
+
+def is_anthro_tag(tag: str | None) -> bool:
+    """Является ли тег anthro-тегом (e621, без футанари)."""
+    if tag is None:
+        return False
+    return tag in ANTHRO_TAGS
+
+
+def is_feet_tag(tag: str | None) -> bool:
+    """Является ли тег feet/heels-тегом (e621, ножки/пятки)."""
+    if tag is None:
+        return False
+    return tag in FEET_TAGS
+
+
+def is_umamusume_tag(tag: str | None) -> bool:
+    """Является ли тег umamusume-тегом (yande/e621).
+
+    Umamusume — фандом/персонажи, доступно на yande.re и e621.
+    """
+    if tag is None:
+        return False
+    return tag in UMAMUSUME_TAGS
 
 
 def get_video_endpoint(tag: str) -> str:
