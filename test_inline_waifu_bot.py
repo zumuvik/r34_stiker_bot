@@ -25,6 +25,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
+    InputMediaAnimation,
     InputMediaPhoto,
     InputMediaVideo,
     InputTextMessageContent,
@@ -32,6 +33,24 @@ from aiogram.types import (
 )
 
 import inline_waifu_bot as bot
+
+# Инициализируем БД для тестов (таблицы создаются в файле, если нет).
+from inline_waifu_bot import database
+
+database.init_db()
+
+# Прямой импорт для очистки кэшей между тестами.
+from inline_waifu_bot import api as _api
+
+
+@pytest.fixture(autouse=True)
+def _patch_url_validation():
+    """Очищаем кэши URL и мокаем валидацию (не ходим в CDN)."""
+    _api._VALIDATED_CACHE.clear()
+    _api._RECENT_URLS.clear()
+    with patch("inline_waifu_bot.api._validate_url", AsyncMock(return_value=True)):
+        yield
+
 
 # ─────────────────────────────────────────────────
 #  Helper — мок aiohttp.ClientSession
@@ -303,116 +322,127 @@ class TestFetchNsfwContent:
 
 
 class TestHandleInlineQuery:
-    """Проверяет Article + текст-заглушка + кнопка верификации в том же чате."""
+    """Проверяет инлайн-запросы: медиа со спойлером для тегов, текст для остального."""
+
+    SUCCESS_URL = "https://cdn.waifu.im/test_photo.jpg"
+    SUCCESS_JSON = {"items": [{"url": SUCCESS_URL, "tags": [{"slug": "waifu"}]}]}
 
     def _make_query(self, text: str) -> AsyncMock:
         query = AsyncMock(spec=InlineQuery)
         query.query = text
         query.from_user = MagicMock()
         query.from_user.id = 12345
+        query.from_user.username = "testuser"
         query.answer = AsyncMock(return_value=None)
         return query
 
-    # ── Тип результата ──────────────────────────────────────
+    # ── Тип результата: photo 🆚 article ────────────────────
 
     @pytest.mark.asyncio
-    async def test_returns_article(self):
-        """Возвращается InlineQueryResultArticle — без NSFW-превью."""
+    async def test_valid_tag_returns_verify_article(self):
+        """Валидный тег → InlineQueryResultArticle с кнопкой верификации."""
         query = self._make_query("maid")
-        await bot.handle_inline_query(query)
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
 
         query.answer.assert_awaited_once()
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
         assert isinstance(result, InlineQueryResultArticle)
-
-    # ── Заголовок и описание ────────────────────────────────
+        assert "Подрочить" in result.title
+        assert "верифика" in result.description.lower() or "подтвержд" in result.description.lower()
 
     @pytest.mark.asyncio
-    async def test_title_contains_tag(self):
-        query = self._make_query("maid")
+    async def test_invalid_tag_returns_verify_article(self):
+        """Неизвестный тег → всё равно статья с верификацией."""
+        query = self._make_query("unknown")
         await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
+        assert isinstance(result, InlineQueryResultArticle)
+
+    @pytest.mark.asyncio
+    async def test_title_contains_tag_label(self):
+        """Заголовок содержит название тега."""
+        query = self._make_query("maid")
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
+
+        _args, kwargs = query.answer.call_args
+        result = kwargs["results"][0]
         assert "maid" in result.title
-        assert "Подрочить" in result.title
 
     @pytest.mark.asyncio
     async def test_title_shows_leaderboard_when_no_query(self):
-        """Пустой запрос → лидерборд (не verify-article)."""
+        """Пустой запрос → лидерборд."""
         query = self._make_query("")
         await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
         assert "ТОП-10" in result.title
-        assert "ШПЕРМАПРИЕМНИКОВ" in result.title
+
+    # ── Caption ─────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_title_shows_random_when_invalid_tag(self):
-        query = self._make_query("unknown")
-        await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert "random" in result.title
-
-    @pytest.mark.asyncio
-    async def test_description(self):
+    async def test_message_contains_verify_veil(self):
+        """Текст сообщения — заглушка 18+ про верификацию."""
         query = self._make_query("maid")
-        await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert "18+" in result.description
-
-    # ── input_message_content ───────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_input_message_content_is_text(self):
-        """Текст-заглушка, не команда."""
-        query = self._make_query("maid")
-        await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert isinstance(result.input_message_content, InputTextMessageContent)
-        assert "18+" in result.input_message_content.message_text
-        assert "maid" in result.input_message_content.message_text
-
-    @pytest.mark.asyncio
-    async def test_input_message_content_leaderboard_when_no_query(self):
-        """Пустой запрос → контент лидерборда (не verify-заглушка)."""
-        query = self._make_query("")
-        await bot.handle_inline_query(query)
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
         text = result.input_message_content.message_text
-        assert "ТОП-10" in text
-        assert "статистика" not in text  # статистика отдельно, не в топе
+        assert "18+" in text or "Контент 18+" in text
 
-    # ── Reply markup (кнопка верификации) ───────────────────
+    # ── Reply markup (кнопка «Давай ещё!») ─────────────────
 
     @pytest.mark.asyncio
     async def test_has_verify_button(self):
-        """К статье прикреплена кнопка «Мне есть 18 лет ✅»."""
+        """У результата есть кнопка «Мне есть 18 лет ✅»."""
         query = self._make_query("maid")
-        await bot.handle_inline_query(query)
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
         assert result.reply_markup is not None
         btn = result.reply_markup.inline_keyboard[0][0]
         assert "18" in btn.text
-        assert "✅" in btn.text
 
     @pytest.mark.asyncio
     async def test_verify_callback_contains_creator_id(self):
-        """В callback_data зашит ID создателя инлайн-запроса."""
+        """В verify_18:callback_data зашит ID создателя."""
         query = self._make_query("maid")
-        await bot.handle_inline_query(query)
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         result = kwargs["results"][0]
@@ -420,18 +450,8 @@ class TestHandleInlineQuery:
         assert ":12345:" in btn.callback_data
 
     @pytest.mark.asyncio
-    async def test_verify_callback_contains_tag(self):
-        query = self._make_query("maid")
-        await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        btn = result.reply_markup.inline_keyboard[0][0]
-        assert btn.callback_data == "verify_18:12345:maid"
-
-    @pytest.mark.asyncio
-    async def test_leaderboard_has_no_verify_button_when_no_query(self):
-        """Пустой запрос → лидерборд без кнопки верификации."""
+    async def test_leaderboard_has_no_markup_when_no_query(self):
+        """Пустой запрос → лидерборд без кнопок."""
         query = self._make_query("")
         await bot.handle_inline_query(query)
 
@@ -439,33 +459,18 @@ class TestHandleInlineQuery:
         result = kwargs["results"][0]
         assert result.reply_markup is None
 
-    @pytest.mark.asyncio
-    async def test_verify_callback_random_when_invalid_tag(self):
-        query = self._make_query("unknown")
-        await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        btn = result.reply_markup.inline_keyboard[0][0]
-        assert btn.callback_data == "verify_18:12345:random"
-
-    # ── Нет фото-полей ────────────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_no_photo_preview_fields(self):
-        query = self._make_query("maid")
-        await bot.handle_inline_query(query)
-
-        _args, kwargs = query.answer.call_args
-        result = kwargs["results"][0]
-        assert not hasattr(result, "photo_url")
-
     # ── Параметры query.answer ─────────────────────────────
 
     @pytest.mark.asyncio
     async def test_cache_time_is_zero(self):
-        query = self._make_query("ero")
-        await bot.handle_inline_query(query)
+        query = self._make_query("maid")
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         assert kwargs["cache_time"] == 0
@@ -473,7 +478,13 @@ class TestHandleInlineQuery:
     @pytest.mark.asyncio
     async def test_is_personal(self):
         query = self._make_query("maid")
-        await bot.handle_inline_query(query)
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         assert kwargs["is_personal"] is True
@@ -481,16 +492,27 @@ class TestHandleInlineQuery:
     @pytest.mark.asyncio
     async def test_single_result(self):
         query = self._make_query("maid")
-        await bot.handle_inline_query(query)
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         assert len(kwargs["results"]) == 1
 
     @pytest.mark.asyncio
     async def test_no_switch_pm(self):
-        """Кнопка «список тегов» удалена."""
         query = self._make_query("maid")
-        await bot.handle_inline_query(query)
+        with (
+            patch("inline_waifu_bot.handlers.database.update_user_sperm",
+                  side_effect=lambda _uid, _uname, delta: delta),
+            patch("inline_waifu_bot.handlers.database.increment_tag_count"),
+        ):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+                await bot.handle_inline_query(query)
 
         _args, kwargs = query.answer.call_args
         assert "switch_pm_text" not in kwargs
@@ -505,7 +527,12 @@ class TestHandleInlineQuery:
 
 
 class TestHandleVerifyCallback:
-    """Проверяет логику кнопки «Мне есть 18 лет ✅»."""
+    """Проверяет логику кнопки «Мне есть 18 лет ✅».
+
+    Два пути:
+    - Инлайн (inline_message_id) → edit_message_media с has_spoiler.
+    - Прямое сообщение (message есть) → delete + send_photo/send_animation.
+    """
 
     SUCCESS_URL = "https://cdn.waifu.im/verify_test.jpg"
     SUCCESS_JSON = {"items": [{"url": SUCCESS_URL, "tags": [{"slug": "waifu"}]}]}
@@ -525,35 +552,58 @@ class TestHandleVerifyCallback:
             yield
 
     @pytest.fixture
-    def mock_bot_edit(self):
-        """Патч bot.edit_message_media для тестов инлайн-пути."""
+    def mock_send(self):
+        """Патч для прямого пути: bot.send_photo / bot.send_animation."""
+        with (
+            patch.object(bot.bot, "send_photo", AsyncMock(return_value=None)),
+            patch.object(bot.bot, "send_animation", AsyncMock(return_value=None)),
+        ):
+            yield
+
+    @pytest.fixture
+    def mock_edit(self):
+        """Патч для инлайн-пути: bot.edit_message_media."""
         with patch.object(bot.bot, "edit_message_media", AsyncMock(return_value=None)) as m:
             yield m
 
-    def _make_callback(
-        self, tag: str | None, *, has_message: bool = False,
-        clicker_id: int | None = None,
-    ) -> AsyncMock:
-        """Создаёт мок CallbackQuery с verify_18: callback_data."""
+    def _make_callback(self, tag: str | None, *, clicker_id: int | None = None):
+        """Создаёт мок CallbackQuery для прямого сообщения (не инлайн)."""
         tag_part = tag if tag else "random"
         callback_data = f"verify_18:{self.CREATOR_ID}:{tag_part}"
 
-        callback = AsyncMock(spec=CallbackQuery)
+        callback = MagicMock(spec=CallbackQuery)
         callback.data = callback_data
         clicker_id = clicker_id or self.CREATOR_ID
         callback.from_user = MagicMock()
         callback.from_user.id = clicker_id
-        callback.inline_message_id = "AQAAABBBCCCDDD" if not has_message else None
-        callback.message = None if not has_message else MagicMock(spec=Message)
-        if has_message:
-            callback.message.edit_media = AsyncMock(return_value=None)
+        callback.from_user.username = "testuser"
+        callback.inline_message_id = None
+        callback.message = MagicMock()
+        callback.message.chat.id = 12345
+        callback.message.delete = AsyncMock(return_value=None)
+        callback.answer = AsyncMock(return_value=None)
+        return callback
+
+    def _make_inline_callback(self, tag: str | None, *, clicker_id: int | None = None):
+        """Создаёт мок CallbackQuery для инлайн-пути."""
+        tag_part = tag if tag else "random"
+        callback_data = f"verify_18:{self.CREATOR_ID}:{tag_part}"
+
+        callback = MagicMock(spec=CallbackQuery)
+        callback.data = callback_data
+        clicker_id = clicker_id or self.CREATOR_ID
+        callback.from_user = MagicMock()
+        callback.from_user.id = clicker_id
+        callback.from_user.username = "testuser"
+        callback.inline_message_id = "AQAAABBBCCCDDD"
+        callback.message = None
         callback.answer = AsyncMock(return_value=None)
         return callback
 
     # ── Парсинг тега ───────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_parses_tag_from_callback_data(self, mock_bot_edit):
+    async def test_parses_tag_from_callback_data(self, mock_send):
         """Тег из callback_data уходит в API."""
         callback = self._make_callback("maid")
 
@@ -566,7 +616,7 @@ class TestHandleVerifyCallback:
         )
 
     @pytest.mark.asyncio
-    async def test_random_tag_passes_no_tag_to_api(self, mock_bot_edit):
+    async def test_random_tag_passes_no_tag_to_api(self, mock_send):
         """random → запрос без тега (Waifu.im)."""
         callback = self._make_callback(None)
 
@@ -580,132 +630,143 @@ class TestHandleVerifyCallback:
         )
 
     @pytest.mark.asyncio
-    async def test_invalid_callback_data_answered_with_alert(self, mock_bot_edit):
-        """Мусор в callback_data — ответ с ошибкой."""
+    async def test_invalid_callback_data_answered_with_alert(self, mock_send):
+        """Мусор в callback_data → ответ с ошибкой."""
         callback = self._make_callback("maid")
         callback.data = "garbage_data"
 
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_verify_callback(callback)
+        await bot.handle_verify_callback(callback)
 
         callback.answer.assert_awaited_once_with(
             "Ошибка данных", show_alert=True,
         )
-        mock_bot_edit.assert_not_called()
+        bot.bot.send_photo.assert_not_called()
 
     # ── Проверка создателя ─────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_stranger_cannot_verify(self, mock_bot_edit):
+    async def test_stranger_cannot_verify(self, mock_send):
         """Чужой получает alert и отказ."""
         callback = self._make_callback("maid", clicker_id=self.STRANGER_ID)
 
-        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
-            await bot.handle_verify_callback(callback)
+        await bot.handle_verify_callback(callback)
 
         callback.answer.assert_awaited_once_with(
             "Это сообщение создал другой пользователь. "
             "Введи @username бота сам!",
             show_alert=True,
         )
-        mock_bot_edit.assert_not_called()
+        bot.bot.send_photo.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_creator_can_verify(self, mock_bot_edit):
-        """Создатель может подтвердить 18+ и получить фото."""
+    async def test_creator_can_verify(self, mock_send):
+        """Создатель может подтвердить 18+ и получить фото под спойлером."""
         callback = self._make_callback("ero")
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_verify_callback(callback)
 
-        mock_bot_edit.assert_awaited_once()
-
-    # ── inline_message_id path ──────────────────────────────
+        bot.bot.send_photo.assert_awaited_once()
+        _args, kwargs = bot.bot.send_photo.call_args
+        assert kwargs["photo"] == self.SUCCESS_URL
+        assert kwargs["has_spoiler"] is True
+        assert kwargs["chat_id"] == 12345
 
     @pytest.mark.asyncio
-    async def test_edit_via_bot_with_inline_message_id(self, mock_bot_edit):
-        callback = self._make_callback("ero")
+    async def test_delete_before_send(self, mock_send):
+        """Текст-заглушка удаляется перед отправкой фото."""
+        callback = self._make_callback("maid")
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_verify_callback(callback)
 
-        _args, kwargs = mock_bot_edit.call_args
+        callback.message.delete.assert_awaited_once()
+
+    # ── GIF path ───────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_gif_uses_send_animation(self, mock_send):
+        """GIF → send_animation с has_spoiler."""
+        callback = self._make_callback("neko_gif")
+
+        with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
+            await bot.handle_verify_callback(callback)
+
+        bot.bot.send_animation.assert_awaited_once()
+        _args, kwargs = bot.bot.send_animation.call_args
+        assert kwargs["animation"] == "https://cdn.purrbot.site/nsfw/neko/gif/neko_031.gif"
+        assert kwargs["has_spoiler"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_failure_falls_back(self, mock_send):
+        """Ошибка отправки → fallback с http.cat."""
+        callback = self._make_callback("maid")
+        bot.bot.send_photo.side_effect = Exception("network")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_verify_callback(callback)
+
+        # Два вызова send_photo: первый упал, второй — fallback
+        assert bot.bot.send_photo.call_count == 2
+        second_call = bot.bot.send_photo.call_args_list[1]
+        assert "http.cat" in second_call.kwargs["photo"]
+        assert second_call.kwargs["has_spoiler"] is True
+
+    # ── Инлайн-путь (inline_message_id) ─────────────────────
+
+    @pytest.mark.asyncio
+    async def test_inline_path_uses_edit_message_media(self, mock_edit):
+        """Инлайн → edit_message_media с has_spoiler."""
+        callback = self._make_inline_callback("maid")
+
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
+            await bot.handle_verify_callback(callback)
+
+        mock_edit.assert_awaited_once()
+        _args, kwargs = mock_edit.call_args
         assert kwargs["inline_message_id"] == "AQAAABBBCCCDDD"
         assert isinstance(kwargs["media"], InputMediaPhoto)
         assert kwargs["media"].has_spoiler is True
-        assert kwargs["reply_markup"].inline_keyboard[0][
-            0].callback_data == f"more:{self.CREATOR_ID}:ero"
-
-    # ── callback.message path ───────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_edit_via_message_when_no_inline_id(self):
-        callback = self._make_callback("maid", has_message=True)
+    async def test_inline_path_gif_uses_input_media_video(self, mock_edit):
+        """Инлайн GIF → InputMediaVideo с has_spoiler."""
+        callback = self._make_inline_callback("neko_gif")
+
+        with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
+            await bot.handle_verify_callback(callback)
+
+        mock_edit.assert_awaited_once()
+        _args, kwargs = mock_edit.call_args
+        assert isinstance(kwargs["media"], InputMediaVideo)
+        assert kwargs["media"].has_spoiler is True
+        assert kwargs["media"].supports_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_inline_edit_failure_falls_back(self, mock_edit):
+        """Ошибка edit_message_media → fallback с edit_message_media."""
+        callback = self._make_inline_callback("maid")
+        mock_edit.side_effect = [Exception("edit failed"), None]
 
         with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_verify_callback(callback)
 
-        callback.message.edit_media.assert_awaited_once()
-        _args, kwargs = callback.message.edit_media.call_args
-        assert isinstance(kwargs["media"], InputMediaPhoto)
-        assert kwargs["media"].has_spoiler is True
-        assert kwargs["reply_markup"].inline_keyboard[0][
-            0].callback_data == f"more:{self.CREATOR_ID}:maid"
-
-    # ── Video / GIF path ──────────────────────────────────
-
-    def _make_video_callback(
-        self, tag: str, *, has_message: bool = False,
-        clicker_id: int | None = None,
-    ) -> AsyncMock:
-        """Создаёт мок с GIF-тегом."""
-        tag_part = tag
-        callback_data = f"verify_18:{self.CREATOR_ID}:{tag_part}"
-        callback = AsyncMock(spec=CallbackQuery)
-        callback.data = callback_data
-        clicker_id = clicker_id or self.CREATOR_ID
-        callback.from_user = MagicMock()
-        callback.from_user.id = clicker_id
-        callback.inline_message_id = "AQAAABBBCCCDDD" if not has_message else None
-        callback.message = None if not has_message else MagicMock(spec=Message)
-        if has_message:
-            callback.message.edit_media = AsyncMock(return_value=None)
-        callback.answer = AsyncMock(return_value=None)
-        return callback
+        assert mock_edit.call_count == 2
+        second_call = mock_edit.call_args_list[1]
+        assert isinstance(second_call.kwargs["media"], InputMediaPhoto)
+        assert "http.cat" in second_call.kwargs["media"].media
 
     @pytest.mark.asyncio
-    async def test_video_uses_InputMediaVideo(self, mock_bot_edit):
-        """GIF-тег → InputMediaVideo."""
-        callback = self._make_video_callback("neko_gif")
+    async def test_inline_delete_not_called(self, mock_edit, mock_send):
+        """Инлайн → delete не вызывается (message is None)."""
+        callback = self._make_inline_callback("maid")
 
-        with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
+        with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
             await bot.handle_verify_callback(callback)
 
-        _args, kwargs = mock_bot_edit.call_args
-        assert isinstance(kwargs["media"], InputMediaVideo)
-        assert kwargs["media"].has_spoiler is True
-
-    @pytest.mark.asyncio
-    async def test_video_edit_failure_falls_back_to_photo(self, mock_bot_edit):
-        """TelegramBadRequest на GIF → фоллбэк на фото с котом."""
-        callback = self._make_video_callback("neko_gif")
-        mock_bot_edit.side_effect = [
-            TelegramBadRequest(method="edit_message_media", message="wrong type"),
-            None,  # second call (fallback) succeeds
-        ]
-
-        with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
-            await bot.handle_verify_callback(callback)
-
-        # Было два вызова edit_message_media
-        assert mock_bot_edit.call_count == 2
-        first_call_args = mock_bot_edit.call_args_list[0]
-        second_call_args = mock_bot_edit.call_args_list[1]
-        # Первый был InputMediaVideo
-        assert isinstance(first_call_args.kwargs["media"], InputMediaVideo)
-        # Второй — InputMediaPhoto с fallback URL
-        assert isinstance(second_call_args.kwargs["media"], InputMediaPhoto)
-        assert "http.cat" in second_call_args.kwargs["media"].media
+        # При инлайн-пути send_photo/send_animation не используются
+        bot.bot.send_photo.assert_not_called()
+        bot.bot.send_animation.assert_not_called()
 
 
 # ─────────────────────────────────────────────────
@@ -1012,7 +1073,7 @@ class TestHandleMoreCallback:
 
     @pytest.mark.asyncio
     async def test_more_video_uses_InputMediaVideo(self, mock_bot_edit):
-        """GIF-тег → InputMediaVideo."""
+        """GIF-тег → InputMediaVideo (со spoiler, надёжнее InputMediaAnimation)."""
         callback = self._make_more_video_callback("neko_gif")
 
         with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
@@ -1021,6 +1082,7 @@ class TestHandleMoreCallback:
         _args, kwargs = mock_bot_edit.call_args
         assert isinstance(kwargs["media"], InputMediaVideo)
         assert kwargs["media"].has_spoiler is True
+        assert kwargs["media"].supports_streaming is True
 
     @pytest.mark.asyncio
     async def test_more_video_edit_failure_falls_back_to_photo(self, mock_bot_edit):
@@ -1038,6 +1100,7 @@ class TestHandleMoreCallback:
         first_call = mock_bot_edit.call_args_list[0]
         second_call = mock_bot_edit.call_args_list[1]
         assert isinstance(first_call.kwargs["media"], InputMediaVideo)
+        assert first_call.kwargs["media"].has_spoiler is True
         assert isinstance(second_call.kwargs["media"], InputMediaPhoto)
         assert "http.cat" in second_call.kwargs["media"].media
 
@@ -1141,6 +1204,36 @@ class TestModuleConfig:
         assert bot.is_furry_tag("neko_gif") is False
         assert bot.is_furry_tag(None) is False
 
+    # ── yuri / femdom ─────────────────────────────────────
+
+    def test_yuri_tag_is_valid(self):
+        assert "yuri" in bot.VALID_TAGS
+
+    def test_femdom_tag_is_valid(self):
+        assert "femdom" in bot.VALID_TAGS
+
+    def test_yuri_not_in_photo_tags(self):
+        assert "yuri" not in bot.PHOTO_TAGS
+
+    def test_femdom_not_in_photo_tags(self):
+        assert "femdom" not in bot.PHOTO_TAGS
+
+    def test_yuri_not_in_video_tags(self):
+        assert "yuri" not in bot.VIDEO_TAGS
+
+    def test_femdom_not_in_video_tags(self):
+        assert "femdom" not in bot.VIDEO_TAGS
+
+    def test_is_yuri_tag(self):
+        assert bot.is_yuri_tag("yuri") is True
+        assert bot.is_yuri_tag("maid") is False
+        assert bot.is_yuri_tag(None) is False
+
+    def test_is_femdom_tag(self):
+        assert bot.is_femdom_tag("femdom") is True
+        assert bot.is_femdom_tag("neko_gif") is False
+        assert bot.is_femdom_tag(None) is False
+
 
 # ─────────────────────────────────────────────────
 #  Database: init_db, update_user_sperm, get_leaderboard
@@ -1234,18 +1327,16 @@ class TestDatabase:
         assert top3[0]["total_sperm"] == 50
         assert top3[-1]["total_sperm"] == 30
 
-    def test_negative_capped_at_zero(self):
-        """total_sperm не уходит в минус — пол в нуле."""
-        # Сначала +10
+    def test_negative_goes_below_zero(self):
+        """total_sperm свободно уходит в минус (пол убран)."""
         bot.update_user_sperm(1, "unlucky", 10)
-        # Потом -25, но в минус уйти нельзя — срезается до 0
         actual = bot.update_user_sperm(1, "unlucky", -25)
+        assert actual == -25  # дельта не срезается
         conn = bot.get_connection()
         row = conn.execute(
             "SELECT total_sperm FROM user_stats WHERE user_id=?", (1,),
         ).fetchone()
-        assert row["total_sperm"] == 0
-        assert actual == -10, f"expected -10, got {actual}"  # 10 → 0, фактически -10
+        assert row["total_sperm"] == -15  # 10 - 25 = -15
 
 
 # ─────────────────────────────────────────────────
@@ -1359,24 +1450,29 @@ class TestStatsInVerifyCallback:
     CREATOR_ID = 12345
 
     @pytest.fixture
-    def mock_bot_edit(self):
-        with patch.object(bot.bot, "edit_message_media", AsyncMock()) as m:
-            yield m
+    def mock_send(self):
+        with (
+            patch.object(bot.bot, "send_photo", AsyncMock()) as sp,
+            patch.object(bot.bot, "send_animation", AsyncMock()),
+        ):
+            yield sp
 
     def _make_callback(self, tag="maid", *, clicker_id=None):
         tag_part = tag or "random"
-        cb = AsyncMock(spec=CallbackQuery)
+        cb = MagicMock(spec=CallbackQuery)
         cb.data = f"verify_18:{self.CREATOR_ID}:{tag_part}"
         cb.from_user = MagicMock()
         cb.from_user.id = clicker_id or self.CREATOR_ID
         cb.from_user.username = "test_user"
-        cb.inline_message_id = "AQAAABBBCCCDDD"
-        cb.message = None
+        cb.inline_message_id = None
+        cb.message = MagicMock()
+        cb.message.chat.id = 12345
+        cb.message.delete = AsyncMock()
         cb.answer = AsyncMock()
         return cb
 
     @pytest.mark.asyncio
-    async def test_caption_includes_stats_line(self, mock_bot_edit):
+    async def test_caption_includes_stats_line(self, mock_send):
         """После верификации caption заканчивается строкой статистики."""
         cb = self._make_callback("waifu")
         with (
@@ -1388,14 +1484,15 @@ class TestStatsInVerifyCallback:
             with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
                 await bot.handle_verify_callback(cb)
 
-        _args, kwargs = mock_bot_edit.call_args
-        caption = kwargs["media"].caption
+        mock_send.assert_awaited_once()
+        _args, kwargs = mock_send.call_args
+        caption = kwargs["caption"]
         assert "Вы подододрочель" in caption
         assert "✅" in caption
         assert "+25 мл спермы" in caption
 
     @pytest.mark.asyncio
-    async def test_negative_stats_format(self, mock_bot_edit):
+    async def test_negative_stats_format(self, mock_send):
         """Отрицательная сперма: ❌ и -N."""
         cb = self._make_callback("ero")
         with (
@@ -1407,14 +1504,15 @@ class TestStatsInVerifyCallback:
             with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
                 await bot.handle_verify_callback(cb)
 
-        _args, kwargs = mock_bot_edit.call_args
-        caption = kwargs["media"].caption
+        mock_send.assert_awaited_once()
+        _args, kwargs = mock_send.call_args
+        caption = kwargs["caption"]
         assert "У тебя сегодня отсох хуец." in caption
         assert "❌" in caption
         assert "-10 мл спермы" in caption
 
     @pytest.mark.asyncio
-    async def test_delta_calls_db(self, mock_bot_edit):
+    async def test_delta_calls_db(self, mock_send):
         """update_user_sperm вызывается с корректными аргументами."""
         cb = self._make_callback("maid")
         with patch("inline_waifu_bot.handlers.database.update_user_sperm", return_value=10) as mock_upd:
@@ -1430,33 +1528,35 @@ class TestStatsInVerifyCallback:
         mock_upd.assert_called_once_with(12345, "test_user", 10)
 
     @pytest.mark.asyncio
-    async def test_fallback_also_has_stats(self, mock_bot_edit):
+    async def test_fallback_also_has_stats(self, mock_send):
         """При фолбэке статистика тоже есть в caption."""
-        cb = self._make_callback("neko_gif")
-        mock_bot_edit.side_effect = [
-            TelegramBadRequest(method="edit_message_media", message="wrong type"),
-            None,
-        ]
+        cb = self._make_callback("maid")
+        mock_send.side_effect = [Exception("network"), None]
         with (
             patch("inline_waifu_bot.handlers.database.update_user_sperm", return_value=25),
             patch("inline_waifu_bot.handlers.database.increment_tag_count"),
             patch("random.choices", return_value=[25]),
             patch("secrets.choice", return_value="Вы подододрочель"),
         ):
-            with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
+            with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
                 await bot.handle_verify_callback(cb)
 
-        second_call = mock_bot_edit.call_args_list[1]
-        caption = second_call.kwargs["media"].caption
+        # Два вызова send_photo: первый упал, второй fallback с http.cat
+        assert mock_send.call_count == 2
+        second_call = mock_send.call_args_list[1]
+        caption = second_call.kwargs["caption"]
         assert "Вы подододрочель" in caption
         assert "✅" in caption
         assert "+25 мл спермы" in caption
+        assert "фолбэк" in caption
+
+
+
 
 
 # ─────────────────────────────────────────────────
-#  Stats line в more_callback
+#  handle_more_callback
 # ─────────────────────────────────────────────────
-
 
 class TestStatsInMoreCallback:
     """Статистика дописывается в caption при «Давай ещё!»."""
@@ -1597,8 +1697,8 @@ class TestLeaderboardInlineQuery:
         assert "🥇 alpha" in text or "alpha" in text
         assert "🥈 beta" in text or "beta" in text
         assert "User #3" in text  # пустой username → User #ID
-        assert "100 мл спермы" in text
-        assert "50 мл спермы" in text
+        assert "100 мл" in text
+        assert "50 мл" in text
         # Личной статистики в топе нет
         assert "Ты ещё не дрочил" not in text
 

@@ -37,6 +37,32 @@ def _is_recent(tag_key: str, url: str) -> bool:
 def _mark_seen(tag_key: str, url: str) -> None:
     _RECENT_URLS[tag_key].append(url)
 
+# ── Validated URL cache (HEAD-проверенные ссылки, до 30шт на тег) ──
+_VALIDATED_CACHE: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
+
+def _cache_pop(tag: str) -> str | None:
+    """Извлекает одну проверенную ссылку из кэша (FIFO)."""
+    q = _VALIDATED_CACHE.get(tag)
+    return q.popleft() if q and len(q) > 0 else None
+
+def _cache_push(tag: str, url: str) -> None:
+    """Добавляет проверенную ссылку в кэш."""
+    _VALIDATED_CACHE[tag].append(url)
+
+async def _validate_url(url: str) -> bool:
+    """
+    HEAD-запрос: проверяет, что URL доступен и возвращает image/*.
+    Таймаут 3 секунды, следует редиректы.
+    """
+    try:
+        timeout = aiohttp.ClientTimeout(total=3)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.head(url, allow_redirects=True) as resp:
+                ct = resp.headers.get("Content-Type", "")
+                return resp.status == 200 and ct.startswith("image/")
+    except Exception:
+        return False
+
 
 # ── Logging helpers ──────────────────────────────────────────────
 
@@ -81,19 +107,18 @@ async def _log_call(tag_key: str | None, provider: str, fetch_fn, *args, **kwarg
         raise
 
 
-# ─────────────────── Основная точка входа ───────────────────
+# ─────────────────── Live fetch (без кэша) ────────────────────
 
 
-async def fetch_nsfw_content(
+async def _live_fetch(
     tag: str | None = None,
 ) -> tuple[str, str, str]:
-    """
-    Запрашивает контент (фото или GIF) в зависимости от тега.
+    """Живой запрос к провайдеру, без проверки кэша.
     
-    Все вызовы провайдеров обёрнуты в ``_log_call`` для сквозного
-    логирования с request ID, таймингом и ошибками.
+    Используется внутри ``fetch_nsfw_content`` после cache-miss,
+    а также фоновым прогревателем.
     """
-    # ── rule34: femboy / furry / anthro / furfem / feet / heels / umamusume ─
+    # ── rule34 ─
     if tag is not None and (
         config.is_femboy_tag(tag)
         or config.is_furry_tag(tag)
@@ -101,6 +126,10 @@ async def fetch_nsfw_content(
         or config.is_furfem_tag(tag)
         or config.is_feet_tag(tag)
         or config.is_umamusume_tag(tag)
+        or config.is_video_r34_tag(tag)
+        or config.is_tentacles_tag(tag)
+        or config.is_yuri_tag(tag)
+        or config.is_femdom_tag(tag)
     ):
         try:
             return await _log_call(tag, "rule34", _fetch_rule34_photo, tag)
@@ -108,16 +137,17 @@ async def fetch_nsfw_content(
             logger.error("[%s] rule34 FAILED", tag)
             return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
-    # ── Конкретный видео-тег (Purrbot) ──────────────────
+    # ── Purrbot (GIF) ─────────────────────────────────
     if tag is not None and config.is_video_tag(tag):
         try:
-            url = await _log_call(tag, "purrbot", _fetch_purrbot, tag)
+            endpoint = config.get_video_endpoint(tag)
+            url = await _log_call(tag, "purrbot", _fetch_purrbot, endpoint)
             return (url, "video", tag)
         except Exception:
             logger.error("[%s] purrbot FAILED, falling back to cat", tag)
             return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
-    # ── Конкретный фото-тег (Waifu.im) ──────────────────
+    # ── Waifu.im ──────────────────────────────────────
     if tag is not None and config.is_photo_tag(tag):
         try:
             url, actual_tag = await _log_call(tag, "waifu", _fetch_waifu_photo, tag)
@@ -144,6 +174,52 @@ async def fetch_nsfw_content(
                 display = actual_tag or "random"
                 return (url, "photo", display)
 
+    return (config.FALLBACK_IMAGE_URL, "photo", "error")
+
+
+# ─────────────────── Основная точка входа ───────────────────
+
+
+async def fetch_nsfw_content(
+    tag: str | None = None,
+) -> tuple[str, str, str]:
+    """
+    Запрашивает контент (фото или GIF).
+    
+    Сначала проверяет ``_VALIDATED_CACHE`` (HEAD-проверенные ссылки).
+    Если кэш пуст — живой запрос к провайдеру, затем валидация URL.
+    Если URL битый — повторяет запрос (до 3 попыток).
+    При неудаче — fallback на ``FALLBACK_IMAGE_URL``.
+    """
+    cache_key = tag or "random"
+
+    # ── 1. Кэш ────────────────────────────────────────────
+    cached_url = _cache_pop(cache_key)
+    if cached_url:
+        logger.debug("[cache] HIT key=%s url=%s", cache_key, cached_url[:60])
+        _mark_seen(cache_key, cached_url)
+        media_type = "video" if cached_url.lower().endswith(".gif") else "photo"
+        return (cached_url, media_type, cache_key)
+
+    # ── 2. Живой запрос + валидация (до 3 попыток) ────────
+    for attempt in range(1, 4):
+        url, media_type, display_tag = await _live_fetch(tag)
+        if url == config.FALLBACK_IMAGE_URL:
+            # Провайдер сам отдал фолбэк — не валидируем, отдаём как есть
+            return (url, media_type, display_tag)
+
+        if await _validate_url(url):
+            _cache_push(cache_key, url)
+            _mark_seen(cache_key, url)
+            return (url, media_type, display_tag)
+
+        logger.warning(
+            "[%s] URL не прошёл валидацию (попытка %d/3): %s",
+            cache_key, attempt, url[:60],
+        )
+
+    # ── 3. Всё сломалось — фолбэк ─────────────────────────
+    logger.error("[%s] все 3 попытки живого запроса дали битые URL", cache_key)
     return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
 
@@ -482,78 +558,183 @@ async def _fetch_yandere_photo(bot_tag: str) -> tuple[str, str, str]:
 
 async def _fetch_rule34_photo(bot_tag: str) -> tuple[str, str, str]:
     """
-    Запрашивает фото/GIF через Rule34.xxx API (limit=100, random page).
+    Запрашивает фото/GIF через Rule34.xxx API.
 
-    Формат ответа: JSON-массив с полями ``file_url``, ``tags``, ``rating``.
-    Поддерживает GIF — если ``file_url`` заканчивается на ``.gif``,
-    возвращается ``media_type="video"``, чтобы Telegram применил спойлер
-    (через ``InputMediaVideo(has_spoiler=True)``).
-
-    Борьба с повторами:
-    - ``limit=100`` — большой пул кандидатов.
-    - ``pid`` — случайная страница (1..50), чтобы не застревать на первой.
+    Стратегия:
+    - ``limit=200`` — большой пул кандидатов.
+    - Перебирает страницы 1..5 последовательно. Если страницы пустая или
+      ошибка — переходит к следующей, а не падает сразу.
     - До 15 попыток выбрать URL, которого нет в кэше ``_RECENT_URLS``.
+    - GIF определяется по ``.gif`` → ``media_type="video"`` для спойлера.
 
     Логи: ``[rule34] [<bot_tag>] pid=<N> HTTP <status> <candidates_count>``
     """
     rule34_tags = config.RULE34_API_TAGS[bot_tag]
-    pid = _random.randint(1, 50)
-    params: dict[str, str] = {
-        "page": "dapi",
-        "s": "post",
-        "q": "index",
-        "json": "1",
-        "tags": rule34_tags,
-        "limit": "100",
-        "pid": str(pid),
-        "api_key": config.RULE34_API_KEY or "",
-        "user_id": config.RULE34_USER_ID or "",
-    }
     headers = {"User-Agent": "WaifuBot/1.0"}
     timeout = aiohttp.ClientTimeout(total=config.API_TIMEOUT_SECONDS)
 
-    async with aiohttp.ClientSession(
-        timeout=timeout, headers=headers
-    ) as session:
-        async with session.get(
-            config.RULE34_API_URL, params=params
-        ) as response:
-            if response.status != 200:
-                body = await response.text()
-                logger.error(
-                    "[rule34] [%s] pid=%s HTTP %d: %s",
-                    bot_tag, pid, response.status, _trunc(body),
-                )
-                raise ValueError(f"Rule34 status {response.status}")
+    def _media_type(url: str) -> str:
+        return "video" if url.lower().endswith(".gif") else "photo"
 
-            data = await response.json()
-            if not data or not isinstance(data, list) or len(data) == 0:
-                logger.warning("[rule34] [%s] pid=%s empty list", bot_tag, pid)
-                raise ValueError("Rule34 вернул пустой список")
+    last_error: Exception | None = None
 
-            candidates = [p.get("file_url") for p in data if p.get("file_url")]
-            logger.debug(
-                "[rule34] [%s] pid=%s HTTP 200, %d candidates",
-                bot_tag, pid, len(candidates),
-            )
+    for pid in range(1, 6):
+        params: dict[str, str] = {
+            "page": "dapi",
+            "s": "post",
+            "q": "index",
+            "json": "1",
+            "tags": rule34_tags,
+            "limit": "200",
+            "pid": str(pid),
+            "api_key": config.RULE34_API_KEY or "",
+            "user_id": config.RULE34_USER_ID or "",
+        }
 
-            if not candidates:
-                logger.warning("[rule34] [%s] pid=%s 0 posts with file_url", bot_tag, pid)
-                raise ValueError("Rule34 вернул посты без file_url")
+        try:
+            async with aiohttp.ClientSession(
+                timeout=timeout, headers=headers
+            ) as session:
+                async with session.get(
+                    config.RULE34_API_URL, params=params
+                ) as response:
+                    if response.status != 200:
+                        body = await response.text()
+                        logger.warning(
+                            "[rule34] [%s] pid=%d HTTP %d → next page",
+                            bot_tag, pid, response.status,
+                        )
+                        last_error = ValueError(f"Rule34 status {response.status}")
+                        continue
 
-            # Определяем media_type по расширению (GIF → video для спойлера)
-            def _media_type(url: str) -> str:
-                return "video" if url.lower().endswith(".gif") else "photo"
+                    data = await response.json()
+                    if not data or not isinstance(data, list) or len(data) == 0:
+                        logger.warning(
+                            "[rule34] [%s] pid=%d empty → next page",
+                            bot_tag, pid,
+                        )
+                        last_error = ValueError("Rule34 вернул пустой список")
+                        continue
 
-            # Выбираем случайный, проверяем по кэшу повторов (до 15 попыток)
-            for pick in range(min(15, len(candidates))):
-                url = _random.choice(candidates)
-                if not _is_recent(bot_tag, url):
+                    candidates = [p.get("file_url") for p in data if p.get("file_url")]
+                    # Для тега "video" отбираем только .gif (остальное — статика)
+                    if bot_tag == "video":
+                        gif_candidates = [u for u in candidates if u.lower().endswith(".gif")]
+                        if gif_candidates:
+                            logger.debug(
+                                "[rule34] [%s] pid=%d %d candidates, %d gif",
+                                bot_tag, pid, len(candidates), len(gif_candidates),
+                            )
+                            candidates = gif_candidates
+                        else:
+                            logger.debug(
+                                "[rule34] [%s] pid=%d %d candidates, 0 gif → next page",
+                                bot_tag, pid, len(candidates),
+                            )
+                            last_error = ValueError("Rule34: нет GIF на странице")
+                            continue
+                    else:
+                        logger.debug(
+                            "[rule34] [%s] pid=%d HTTP 200, %d candidates",
+                            bot_tag, pid, len(candidates),
+                        )
+
+                    if not candidates:
+                        logger.warning(
+                            "[rule34] [%s] pid=%d 0 file_url → next page",
+                            bot_tag, pid,
+                        )
+                        last_error = ValueError("Rule34 вернул посты без file_url")
+                        continue
+
+                    # Выбираем случайный, проверяем по кэшу повторов (до 15)
+                    for pick in range(min(15, len(candidates))):
+                        url = _random.choice(candidates)
+                        if not _is_recent(bot_tag, url):
+                            _mark_seen(bot_tag, url)
+                            return (url, _media_type(url), bot_tag)
+                        candidates.remove(url)
+
+                    # Все были в кэше — отдаём последний
                     _mark_seen(bot_tag, url)
+                    logger.debug(
+                        "[rule34] [%s] pid=%d all %d candidates recent",
+                        bot_tag, pid, len(data),
+                    )
                     return (url, _media_type(url), bot_tag)
-                candidates.remove(url)
 
-            # Все были в кэше — отдаём последний
-            _mark_seen(bot_tag, url)
-            logger.debug("[rule34] [%s] all %d candidates were recent", bot_tag, len(data))
-            return (url, _media_type(url), bot_tag)
+        except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+            logger.warning(
+                "[rule34] [%s] pid=%d network error: %s → next page",
+                bot_tag, pid, exc,
+            )
+            last_error = exc
+            continue
+
+    logger.error("[rule34] [%s] exhausted pages 1-5, last error: %s", bot_tag, last_error)
+    raise ValueError(
+        f"Rule34 не вернул контент после 5 страниц"
+    ) from last_error
+
+
+# ─────────────────── Фоновый прогреватель кэша ───────────────────
+
+
+async def _warm_single_tag(tag: str | None) -> None:
+    """Одна итерация прогрева для одного тега."""
+    cache_key = tag or "random"
+    # Сколько ещё можем добавить (до 30)
+    current = len(_VALIDATED_CACHE.get(cache_key, []))
+    need = 30 - current
+    if need <= 0:
+        return
+
+    for _ in range(need):
+        try:
+            url, _media_type, _display = await _live_fetch(tag)
+            if url == config.FALLBACK_IMAGE_URL:
+                continue
+            if await _validate_url(url):
+                # Не вызываем _mark_seen — прогреватель не должен
+                # влиять на дедупликацию для пользователей
+                _cache_push(cache_key, url)
+        except Exception:
+            pass
+        # Небольшая задержка между запросами к одному тегу
+        await asyncio.sleep(0.3)
+
+
+async def _cache_warmer_loop() -> None:
+    """
+    Фоновый цикл: прогревает ``_VALIDATED_CACHE`` для всех тегов.
+    
+    Проходит по очереди тегов, заполняет до 30 проверенных URL на тег.
+    Полный цикл занимает ~несколько минут (зависит от кол-ва тегов).
+    Перезапускается каждые 10 минут.
+    """
+    logger.info("[warmer] прогреватель кэша запущен")
+    while True:
+        # Сначала прогреваем "горячие" теги (самые популярные)
+        hot_tags = ["random", "maid", "ero", "waifu", "hentai", "ass", "oppai",
+                     "milf", "neko_gif", "femboy", "furry", "feet"]
+        for tag in hot_tags:
+            try:
+                await _warm_single_tag(tag)
+            except Exception:
+                logger.exception("[warmer] ошибка при прогреве %s", tag)
+            await asyncio.sleep(1)  # пауза между тегами
+
+        # Потом остальные
+        others = sorted(t for t in config.VALID_TAGS if t not in hot_tags)
+        for tag in others:
+            try:
+                await _warm_single_tag(tag)
+            except Exception:
+                logger.exception("[warmer] ошибка при прогреве %s", tag)
+            await asyncio.sleep(1)
+
+        logger.info(
+            "[warmer] цикл завершён, всего URL в кэше: %d",
+            sum(len(q) for q in _VALIDATED_CACHE.values()),
+        )
+        await asyncio.sleep(600)  # следующий цикл через 10 минут

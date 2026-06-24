@@ -22,6 +22,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
+    InputMediaAnimation,
     InputMediaPhoto,
     InputMediaVideo,
     InputTextMessageContent,
@@ -48,18 +49,21 @@ def _build_media(
     media_url: str,
     media_type: str,
     caption: str,
-) -> InputMediaPhoto | InputMediaVideo:
+) -> InputMediaAnimation | InputMediaPhoto | InputMediaVideo:
     """
-    Создаёт ``InputMediaPhoto`` или ``InputMediaVideo`` с has_spoiler=True.
+    Создаёт ``InputMediaPhoto`` / ``InputMediaVideo`` / ``InputMediaAnimation``
+    с ``has_spoiler=True``.
 
-    Если URL заканчивается на ``.gif``, всегда использует ``InputMediaVideo``
-    (даже если провайдер вернул ``media_type="photo"``), чтобы Telegram
-    корректно применил спойлер к анимации.
+    Все типы анимаций/видео идут через ``InputMediaVideo`` — спойлер
+    работает надёжнее, чем через ``InputMediaAnimation``.
+    ``InputMediaAnimation`` используется только как fallback, если
+    ``media_type="animation"``.
     """
-    if media_url.lower().endswith(".gif"):
-        return InputMediaVideo(media=media_url, caption=caption, has_spoiler=True)
-    cls = InputMediaVideo if media_type == "video" else InputMediaPhoto
-    return cls(media=media_url, caption=caption, has_spoiler=True)
+    if media_url.lower().endswith(".gif") or media_type == "video":
+        return InputMediaVideo(media=media_url, caption=caption, has_spoiler=True, supports_streaming=True)
+    if media_type == "animation":
+        return InputMediaAnimation(media=media_url, caption=caption, has_spoiler=True)
+    return InputMediaPhoto(media=media_url, caption=caption, has_spoiler=True)
 
 
 # ─────────────────── Хелпер: отредактировать сообщение ───────────────────
@@ -67,7 +71,7 @@ def _build_media(
 
 async def _edit_message(
     callback: CallbackQuery,
-    media: InputMediaPhoto | InputMediaVideo,
+    media: InputMediaAnimation | InputMediaPhoto | InputMediaVideo,
     reply_markup: InlineKeyboardMarkup,
 ) -> None:
     """
@@ -97,20 +101,24 @@ async def _generate_stats(user_id: int, username: str | None) -> str:
 
         {фраза} | {✅/❌} | {+/-X мл спермы}
 
-    Правила:
-    - фиксированные суммы, без рандома
-    - положительных исходов ~80%, отрицательных ~20%
-    - джекпот +500 с шансом 5%
-    - пол в нуле — уйти в минус нельзя
+    Новые шансы (сумма весов = 100):
+    - +10  30 %,  +25  28 %,  +50  15 %,  +100  10 %
+    - +500  1 %           (было 5 %)
+    - -200  2 %           (новый крупный минус)
+    - -10  8 %,  -25  6 %
+
+    Пол в нуле УБРАН — баланс может быть отрицательным.
     """
-    # Тиры: (дельта, вес)
+    # Тиры: (дельта, вес) — сумма = 100
     TIERS: list[tuple[int, int]] = [
-        (10,   30),   # +10  — часто
-        (25,   30),   # +25  — часто
-        (50,   15),   # +50  — нечасто
-        (500,   5),   # +500 — джекпот, редко
-        (-10,  12),   # -10  — редко
-        (-25,   8),   # -25  — очень редко
+        (10,   30),   # +10   30 %
+        (25,   28),   # +25   28 %
+        (50,   15),   # +50   15 %
+        (100,  10),   # +100  10 %
+        (500,   1),   # +500   1 %
+        (-10,   8),   # -10    8 %
+        (-25,   6),   # -25    6 %
+        (-200,  2),   # -200   2 %
     ]
 
     # Выбираем дельту по весам
@@ -129,26 +137,18 @@ async def _generate_stats(user_id: int, username: str | None) -> str:
             phrase = secrets.choice(config.POSITIVE_PHRASES)
         sign = "✅"
         delta_str = f"+{raw_delta}"
-        applied_delta = raw_delta
     else:
-        phrase = secrets.choice(config.NEGATIVE_PHRASES)
+        if raw_delta <= -200:
+            phrase = "КАПУТ! Полный слив балона!"
+        else:
+            phrase = secrets.choice(config.NEGATIVE_PHRASES)
         sign = "❌"
         delta_str = f"{raw_delta}"
-        applied_delta = raw_delta
 
-    # Обновляем БД (с полом в нуле).
-    actual_delta = await asyncio.to_thread(
-        database.update_user_sperm, user_id, username or "", applied_delta,
+    # Обновляем БД (пола больше нет).
+    await asyncio.to_thread(
+        database.update_user_sperm, user_id, username or "", raw_delta,
     )
-
-    # Если пол срезал дельту — показываем реальную
-    if actual_delta != applied_delta:
-        if actual_delta > 0:
-            delta_str = f"+{actual_delta}"
-        elif actual_delta == 0:
-            delta_str = "0"
-        else:
-            delta_str = str(actual_delta)
 
     return f"{phrase} | {sign} | {delta_str} мл спермы"
 
@@ -164,7 +164,7 @@ async def handle_inline_query(query: InlineQuery) -> None:
     - Пустой запрос → лидерборд + список тегов.
     - ``top`` → только лидерборд.
     - ``stats`` → только личная статистика.
-    - ``<тег>`` → только верификация для тега.
+    - ``<тег>`` → медиа со спойлером напрямую (без кнопки верификации).
     """
     user_query = query.query.strip().lower()
     creator_id = query.from_user.id
@@ -221,6 +221,17 @@ def _make_verify_article(creator_id: int, tag_display: str) -> InlineQueryResult
     )
 
 
+async def _get_user_achievements(user_id: int) -> list[str]:
+    """Возвращает список смешных достижений на основе топ-3 тегов пользователя."""
+    fav_tags = await asyncio.to_thread(database.get_user_favorite_tags, user_id, 3)
+    achievements = []
+    for ft in fav_tags:
+        title = config.TAG_ACHIEVEMENTS.get(ft["tag"])
+        if title:
+            achievements.append(title)
+    return achievements
+
+
 async def _build_leaderboard_text() -> str:
     """Формирует текст лидерборда (только топ, без личной статистики)."""
     top_users = await asyncio.to_thread(database.get_leaderboard, 10)
@@ -235,8 +246,13 @@ async def _build_leaderboard_text() -> str:
         display_name = f"@{u['username']}" if u["username"] else f"User #{u['user_id']}"
         sperm = u["total_sperm"]
         medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+
+        # Достижения (топ-3 тега → смешные названия)
+        achievements = await _get_user_achievements(u["user_id"])
+        ach_part = " | " + " | ".join(achievements) if achievements else ""
+
         lines.append(
-            f'{medal} <a href="tg://user?id={u["user_id"]}"><b>{display_name}</b></a> — {sperm} мл спермы'
+            f'{medal} <a href="tg://user?id={u["user_id"]}"><b>{display_name}</b></a> — {sperm} мл{ach_part}'
         )
     return "\n".join(lines)
 
@@ -318,7 +334,7 @@ async def _answer_leaderboard_with_tags(query: InlineQuery, user_id: int) -> Non
     )
 
 
-# ─────────────────── Callback: верификация 18+ → контент ───────────────────
+# ─────────────────── Callback: верификация 18+ → контент под спойлером ─────────
 
 
 @dp.callback_query(F.data.startswith("verify_18:"))
@@ -326,25 +342,21 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     """
     Обрабатывает нажатие «Мне есть 18 лет ✅».
 
-    1. Проверяет создателя.
-    2. Запрашивает контент (фото или видео).
-    3. Заменяет текст-заглушку на контент под спойлером.
-    4. При ошибке видео — фоллбэк на фото с котом.
+    Удаляет текст-заглушку и отправляет новое сообщение с медиа
+    под спойлером. Новое сообщение создаётся сразу как медиа с
+    ``has_spoiler=True`` — так спойлер работает надёжнее, чем
+    при редактировании текста → медиа.
     """
     payload = callback.data.removeprefix("verify_18:")
     try:
         creator_id_str, tag_str = payload.split(":", 1)
         creator_id = int(creator_id_str)
     except (ValueError, IndexError):
-        logger.warning("[u:%s] verify: invalid callback_data: %s", callback.from_user.id, callback.data)
         await callback.answer("Ошибка данных", show_alert=True)
         return
 
     clicker_id = callback.from_user.id
     if clicker_id != creator_id:
-        logger.info(
-            "[u:%s] verify: чужой (owner=%s)", clicker_id, creator_id,
-        )
         await callback.answer(
             "Это сообщение создал другой пользователь. "
             "Введи @username бота сам!",
@@ -355,52 +367,112 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     tag: str | None = tag_str if tag_str != "random" else None
     tag_display = tag or "random"
 
-    t0 = time.monotonic()
-    logger.info(
-        "[u:%s] verify: start, тег='%s'",
-        creator_id, tag,
-    )
-
     await callback.answer()
 
-    # Статистика генерируется ДО редактирования (один редактив с полным caption).
     stats_line = await _generate_stats(creator_id, callback.from_user.username)
-
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
-    fetch_elapsed = time.monotonic() - t0
-    logger.info(
-        "[u:%s] verify 18+ content: тег='%s' → type=%s fetch=%.2fs",
-        creator_id, tag, media_type, fetch_elapsed,
-    )
-    # Трекинг реального тега (не "random") в БД
     await asyncio.to_thread(database.increment_tag_count, creator_id, display_tag)
     caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
-    media_obj = _build_media(media_url, media_type, caption)
+    markup = build_markup(tag, creator_id)
 
-    try:
-        await _edit_message(callback, media_obj, build_markup(tag, creator_id))
-    except TelegramBadRequest as exc:
-        if "message is not modified" in str(exc):
-            logger.info("[u:%s] verify: content unchanged, skipping", creator_id)
-            return
-        logger.warning(
-            "[u:%s] verify edit failed (type=%s): %s → cat fallback",
-            creator_id, media_type, exc,
-        )
-        fallback = InputMediaPhoto(
-            media=config.FALLBACK_IMAGE_URL,
-            caption=(
-                f"<b>NSFW Anime</b> (фолбэк)\n"
-                f"Тег: {display_tag}\n"
-                f"{stats_line}"
-            ),
-        )
-        await _edit_message(callback, fallback, build_markup(tag, creator_id))
-    except Exception as exc:
-        logger.error(
-            "[u:%s] verify: unexpected error: %s: %s",
-            creator_id, type(exc).__name__, exc,
-        )
+    # ── Инлайн-путь: сообщение из инлайн-режима (callback.inline_message_id) ──
+    # Нельзя отправить новое сообщение — нет chat_id. Редактируем через
+    # edit_message_media с has_spoiler (иногда не применяется, но выбора нет).
+    if callback.inline_message_id:
+        try:
+            if media_url.lower().endswith(".gif"):
+                await bot.edit_message_media(
+                    inline_message_id=callback.inline_message_id,
+                    media=InputMediaVideo(
+                        media=media_url,
+                        caption=caption,
+                        parse_mode="HTML",
+                        has_spoiler=True,
+                        supports_streaming=True,
+                    ),
+                    reply_markup=markup,
+                )
+            else:
+                await bot.edit_message_media(
+                    inline_message_id=callback.inline_message_id,
+                    media=InputMediaPhoto(
+                        media=media_url,
+                        caption=caption,
+                        parse_mode="HTML",
+                        has_spoiler=True,
+                    ),
+                    reply_markup=markup,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[u:%s] verify inline edit failed (type=%s): %s → cat fallback",
+                creator_id, media_type, exc,
+            )
+            try:
+                await bot.edit_message_media(
+                    inline_message_id=callback.inline_message_id,
+                    media=InputMediaPhoto(
+                        media=config.FALLBACK_IMAGE_URL,
+                        caption=(
+                            f"<b>NSFW Anime</b> (фолбэк)\n"
+                            f"Тег: {display_tag}\n"
+                            f"{stats_line}"
+                        ),
+                        parse_mode="HTML",
+                        has_spoiler=True,
+                    ),
+                    reply_markup=markup,
+                )
+            except Exception:
+                logger.exception("[u:%s] verify: inline fallback also failed", creator_id)
+
+    # ── Прямое сообщение: удаляем текст-заглушку и шлём новое медиа ──
+    # (гарантирует has_spoiler от рождения).
+    else:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass  # если не выйдет удалить — не страшно
+
+        try:
+            if media_url.lower().endswith(".gif"):
+                await bot.send_animation(
+                    chat_id=callback.message.chat.id,
+                    animation=media_url,
+                    caption=caption,
+                    parse_mode="HTML",
+                    has_spoiler=True,
+                    reply_markup=markup,
+                )
+            else:
+                await bot.send_photo(
+                    chat_id=callback.message.chat.id,
+                    photo=media_url,
+                    caption=caption,
+                    parse_mode="HTML",
+                    has_spoiler=True,
+                    reply_markup=markup,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[u:%s] verify send failed (type=%s): %s → cat fallback",
+                creator_id, media_type, exc,
+            )
+            try:
+                await bot.send_photo(
+                    chat_id=callback.message.chat.id,
+                    photo=config.FALLBACK_IMAGE_URL,
+                    caption=(
+                        f"<b>NSFW Anime</b> (фолбэк)\n"
+                        f"Тег: {display_tag}\n"
+                        f"{stats_line}"
+                    ),
+                    parse_mode="HTML",
+                    has_spoiler=True,
+                    reply_markup=markup,
+                )
+            except Exception:
+                logger.exception("[u:%s] verify: fallback also failed", creator_id)
 
 
 # ─────────────────── Callback: Давай ещё! ───────────────────

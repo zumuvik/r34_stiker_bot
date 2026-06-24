@@ -47,7 +47,12 @@ from .config import (  # noqa: F401, E402
     YANDE_RE_API_URL,
     YANDE_RE_TAGS,
     UMAMUSUME_TAGS,
+    VIDEO_R34_TAGS,
+    TENTACLES_TAGS,
+    YURI_TAGS,
+    FEMDOM_TAGS,
     TAG_LABELS,
+    TAG_ACHIEVEMENTS,
     VIDEO_ENDPOINTS,
     validate_tag,
     get_tag_label,
@@ -59,6 +64,10 @@ from .config import (  # noqa: F401, E402
     is_furfem_tag,
     is_feet_tag,
     is_umamusume_tag,
+    is_video_r34_tag,
+    is_tentacles_tag,
+    is_yuri_tag,
+    is_femdom_tag,
     get_video_endpoint,
 )
 from .api import fetch_nsfw_content  # noqa: F401, E402

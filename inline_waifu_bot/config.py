@@ -109,6 +109,14 @@ ANTHRO_TAGS: frozenset[str] = frozenset({"anthro"})
 FURFEM_TAGS: frozenset[str] = frozenset({"furfem"})
 FEET_TAGS: frozenset[str] = frozenset({"feet", "heels"})
 UMAMUSUME_TAGS: frozenset[str] = frozenset({"umamusume"})
+VIDEO_R34_TAGS: frozenset[str] = frozenset({"video"})
+"""Анимации/GIF через Rule34.xxx (тег ``animated``)."""
+TENTACLES_TAGS: frozenset[str] = frozenset({"tentacles"})
+"""Тентакли через Rule34.xxx."""
+YURI_TAGS: frozenset[str] = frozenset({"yuri"})
+"""Юри через Rule34.xxx."""
+FEMDOM_TAGS: frozenset[str] = frozenset({"femdom"})
+"""Фемдом через Rule34.xxx."""
 
 # API-эндпоинты для новых провайдеров.
 E621_API_URL: str = "https://e621.net/posts.json"
@@ -169,16 +177,57 @@ RULE34_API_TAGS: dict[str, str] = {
     "feet": "feet rating:explicit -loli -shota -male -anthro -furry",
     "heels": "high_heels rating:explicit -loli -shota -male -anthro -furry",
     "umamusume": "umamusume rating:explicit -loli -shota -male -trap -futanari -dickgirl -fat -chubby -obese -overweight -thick",
+    "video": "animated rating:explicit -loli -shota",
+    "tentacles": "tentacles rating:explicit -loli -shota",
+    "yuri": "yuri rating:explicit -loli -shota",
+    "femdom": "femdom rating:explicit -loli -shota",
 }
 """Маппинг тегов бота → строки поиска rule34.xxx."""
 
 # Объединённое множество (для валидации).
-VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS | FEMBOY_TAGS | FURRY_TAGS | ANTHRO_TAGS | FURFEM_TAGS | FEET_TAGS | UMAMUSUME_TAGS)
+VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS | FEMBOY_TAGS | FURRY_TAGS | ANTHRO_TAGS | FURFEM_TAGS | FEET_TAGS | UMAMUSUME_TAGS | VIDEO_R34_TAGS | TENTACLES_TAGS | YURI_TAGS | FEMDOM_TAGS)
 
 # Человекочитаемые названия тегов для меню.
 TAG_LABELS: dict[str, str] = {
     "umamusume": "Umamusume Pretty Derby",
+    "video": "Анимация / GIF",
+    "tentacles": "Тентакли",
+    "yuri": "Юри (девочки-девочки)",
+    "femdom": "Фемдом (доминирование)",
 }
+
+# Маппинг тегов → смешные достижения для топа.
+TAG_ACHIEVEMENTS: dict[str, str] = {
+    "neko_gif":   "Гифкоман",
+    "nsfw_gif":   "Гифоман-экстремал",
+    "femboy":     "Фембой-ловушка",
+    "furry":      "Пушной зверь",
+    "anthro":     "Антропо-поцик",
+    "furfem":     "Фурри-фем",
+    "feet":       "Ножкоман",
+    "heels":      "Каблучник",
+    "umamusume":  "Умамуся",
+    "tentacles":  "Тентакль-стайл",
+    "yuri":       "Юрист",
+    "femdom":     "Фемдом-госпожа",
+    "video":      "Гифочник",
+    "waifu":      "Вайфу-коллектор",
+    "maid":       "Мейдоман",
+    "ero":        "Эро-мастер",
+    "hentai":     "Хентай-задрот",
+    "ass":        "Жопошник",
+    "oppai":      "Сиськоман",
+    "milf":       "Милфолог",
+    "oral":       "Рот на замке",
+    "paizuri":    "Пазурщик",
+    "ecchi":      "Эччи-извращ",
+    "selfies":    "Селфи-фил",
+    "uniform":    "Униформенный",
+    "marin-kitagawa": "Марин-фаг",
+    "mori-calliope":  "Мори-симпатяга",
+    "raiden-shogun":  "Райден-шогун",
+}
+"""Маппинг тегов → смешные достижения для лидерборда."""
 
 # ─────────────────── Хелперы ───────────────────
 
@@ -262,6 +311,34 @@ def is_umamusume_tag(tag: str | None) -> bool:
     if tag is None:
         return False
     return tag in UMAMUSUME_TAGS
+
+
+def is_video_r34_tag(tag: str | None) -> bool:
+    """Является ли тег видео-тегом (Rule34, ``animated``)."""
+    if tag is None:
+        return False
+    return tag in VIDEO_R34_TAGS
+
+
+def is_tentacles_tag(tag: str | None) -> bool:
+    """Является ли тег тентаклей (Rule34)."""
+    if tag is None:
+        return False
+    return tag in TENTACLES_TAGS
+
+
+def is_yuri_tag(tag: str | None) -> bool:
+    """Является ли тег юри (Rule34)."""
+    if tag is None:
+        return False
+    return tag in YURI_TAGS
+
+
+def is_femdom_tag(tag: str | None) -> bool:
+    """Является ли тег фемдома (Rule34)."""
+    if tag is None:
+        return False
+    return tag in FEMDOM_TAGS
 
 
 def get_video_endpoint(tag: str) -> str:

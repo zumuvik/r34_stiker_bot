@@ -55,41 +55,27 @@ def update_user_sperm(user_id: int, username: str, delta: int) -> int:
     """
     Добавляет (или вычитает) ``delta`` к ``total_sperm`` пользователя.
 
-    Пол в нуле — уйти в минус нельзя (``MAX(0, total_sperm + delta)``).
+    Пол в нуле НЕТ — баланс свободно уходит в минус.
 
     Returns:
-        Фактический дельта, который был применён (может отличаться
-        от запрошенного, если сработал пол).
+        ``delta`` (всегда равен запрошенному, пол не срезает).
     """
     with _write_lock:
         conn = get_connection()
 
-        # Текущий баланс до изменения
-        row = conn.execute(
-            "SELECT total_sperm FROM user_stats WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()
-        old = row["total_sperm"] if row else 0
-
-        # UPSERT с полом в нуле
+        # UPSERT без пола
         conn.execute(
             """
             INSERT INTO user_stats (user_id, username, total_sperm)
-            VALUES (?, ?, MAX(0, ?))
+            VALUES (?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 username     = excluded.username,
-                total_sperm  = MAX(0, total_sperm + ?)
+                total_sperm  = total_sperm + ?
             """,
             (user_id, username, delta, delta),
         )
         conn.commit()
-
-        # Реальный дельта (для отображения)
-        new = conn.execute(
-            "SELECT total_sperm FROM user_stats WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()["total_sperm"]
-        return new - old
+        return delta
 
 
 def get_leaderboard(limit: int = 10) -> list[dict]:
