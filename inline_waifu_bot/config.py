@@ -47,7 +47,7 @@ if not BOT_TOKEN:
 WAIFU_API_URL: str = "https://api.waifu.im/images"
 """Базовый эндпоинт Waifu.im API."""
 
-FALLBACK_IMAGE_URL: str = "https://placehold.co/600x400/FF0000/FFFFFF.png?text=Error+Loading+Image"
+FALLBACK_IMAGE_URL: str = "https://http.cat/500"
 """Заглушка на случай недоступности API или ошибочного ответа."""
 
 

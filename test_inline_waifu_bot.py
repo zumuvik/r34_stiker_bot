@@ -709,7 +709,7 @@ class TestHandleVerifyCallback:
         # Два вызова send_photo: первый упал, второй — fallback
         assert bot.bot.send_photo.call_count == 2
         second_call = bot.bot.send_photo.call_args_list[1]
-        assert "placehold.co" in second_call.kwargs["photo"]
+        assert "http.cat" in second_call.kwargs["photo"]
         assert second_call.kwargs["has_spoiler"] is True
 
     # ── Инлайн-путь (inline_message_id) ─────────────────────
@@ -754,7 +754,7 @@ class TestHandleVerifyCallback:
         assert mock_edit.call_count == 2
         second_call = mock_edit.call_args_list[1]
         assert isinstance(second_call.kwargs["media"], InputMediaPhoto)
-        assert "placehold.co" in second_call.kwargs["media"].media
+        assert "http.cat" in second_call.kwargs["media"].media
 
     @pytest.mark.asyncio
     async def test_inline_delete_not_called(self, mock_edit, mock_send):
@@ -1102,7 +1102,7 @@ class TestHandleMoreCallback:
         assert isinstance(first_call.kwargs["media"], InputMediaVideo)
         assert first_call.kwargs["media"].has_spoiler is True
         assert isinstance(second_call.kwargs["media"], InputMediaPhoto)
-        assert "placehold.co" in second_call.kwargs["media"].media
+        assert "http.cat" in second_call.kwargs["media"].media
 
 
 # ─────────────────────────────────────────────────
@@ -1541,7 +1541,7 @@ class TestStatsInVerifyCallback:
             with _mock_aiohttp_get(json_data=self.SUCCESS_JSON):
                 await bot.handle_verify_callback(cb)
 
-        # Два вызова send_photo: первый упал, второй fallback с http.cat
+        # Два вызова send_photo: первый упал, второй fallback с http.cat/500
         assert mock_send.call_count == 2
         second_call = mock_send.call_args_list[1]
         caption = second_call.kwargs["caption"]
