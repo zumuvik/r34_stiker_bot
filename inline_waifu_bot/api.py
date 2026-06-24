@@ -51,13 +51,15 @@ def _cache_push(tag: str, url: str) -> None:
 
 async def _validate_url(url: str) -> bool:
     """
-    HEAD-запрос: проверяет, что URL доступен и возвращает image/*.
-    Таймаут 3 секунды, следует редиректы.
+    GET-запрос (stream): проверяет, что URL доступен и возвращает image/*.
+    Таймаут 5 секунд.
+    GET вместо HEAD, потому что многие CDN (waifu.im, e621, yande.re)
+    не возвращают корректный Content-Type на HEAD-запросы.
     """
     try:
-        timeout = aiohttp.ClientTimeout(total=3)
+        timeout = aiohttp.ClientTimeout(total=5)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.head(url, allow_redirects=True) as resp:
+            async with session.get(url) as resp:
                 ct = resp.headers.get("Content-Type", "")
                 return resp.status == 200 and ct.startswith("image/")
     except Exception:
@@ -695,8 +697,7 @@ async def _warm_single_tag(tag: str | None) -> None:
             if url == config.FALLBACK_IMAGE_URL:
                 continue
             if await _validate_url(url):
-                # Не вызываем _mark_seen — прогреватель не должен
-                # влиять на дедупликацию для пользователей
+                _mark_seen(cache_key, url)
                 _cache_push(cache_key, url)
         except Exception:
             pass
