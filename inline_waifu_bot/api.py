@@ -204,6 +204,9 @@ async def fetch_nsfw_content(
         return (cached_url, media_type, cache_key)
 
     # ── 2. Живой запрос + валидация (до 3 попыток) ────────
+    # NOTE: не пушим в _VALIDATED_CACHE — только warmer наполняет кэш.
+    # Иначе URL, только что полученный через live fetch, попадёт в кэш
+    # и будет немедленно возвращён при следующем запросе → дубликат.
     for attempt in range(1, 4):
         url, media_type, display_tag = await _live_fetch(tag)
         if url == config.FALLBACK_IMAGE_URL:
@@ -211,7 +214,6 @@ async def fetch_nsfw_content(
             return (url, media_type, display_tag)
 
         if await _validate_url(url):
-            _cache_push(cache_key, url)
             _mark_seen(cache_key, url)
             return (url, media_type, display_tag)
 
