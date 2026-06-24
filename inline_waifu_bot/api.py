@@ -137,6 +137,13 @@ async def _live_fetch(
             return await _log_call(tag, "rule34", _fetch_rule34_photo, tag)
         except Exception:
             logger.error("[%s] rule34 FAILED", tag)
+            # Fallback на e621 для тегов, у которых есть e621-маппинг
+            if tag in config.E621_API_TAGS:
+                try:
+                    logger.info("[%s] rule34 FAILED → пробуем e621", tag)
+                    return await _log_call(tag, "e621", _fetch_e621_photo, tag)
+                except Exception:
+                    logger.error("[%s] e621 fallback тоже FAILED", tag)
             return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
     # ── Purrbot (GIF) ─────────────────────────────────
@@ -693,18 +700,28 @@ async def _warm_single_tag(tag: str | None) -> None:
     if need <= 0:
         return
 
+    # Rule34 rate-limits жёстко — большая пауза между запросами
+    is_rule34 = tag is not None and (
+        config.is_femboy_tag(tag) or config.is_furry_tag(tag)
+        or config.is_anthro_tag(tag) or config.is_furfem_tag(tag)
+        or config.is_feet_tag(tag) or config.is_umamusume_tag(tag)
+        or config.is_video_r34_tag(tag) or config.is_tentacles_tag(tag)
+        or config.is_yuri_tag(tag) or config.is_femdom_tag(tag)
+    )
+    sleep_sec = 3.0 if is_rule34 else 0.3
+
     for _ in range(need):
         try:
             url, _media_type, _display = await _live_fetch(tag)
             if url == config.FALLBACK_IMAGE_URL:
+                await asyncio.sleep(sleep_sec)
                 continue
             if await _validate_url(url):
                 _mark_seen(cache_key, url)
                 _cache_push(cache_key, url)
         except Exception:
             pass
-        # Небольшая задержка между запросами к одному тегу
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(sleep_sec)
 
 
 async def _cache_warmer_loop() -> None:
@@ -717,9 +734,10 @@ async def _cache_warmer_loop() -> None:
     """
     logger.info("[warmer] прогреватель кэша запущен")
     while True:
-        # Сначала прогреваем "горячие" теги (самые популярные)
+        # Сначала прогреваем "горячие" теги (waifu.im / purrbot, без rule34)
+        # rule34-теги прогреваются медленно (3s пауза) из-за rate-limit
         hot_tags = ["random", "maid", "ero", "waifu", "hentai", "ass", "oppai",
-                     "milf", "neko_gif", "femboy", "furry", "feet"]
+                     "milf", "neko_gif", "nsfw_gif"]
         for tag in hot_tags:
             try:
                 await _warm_single_tag(tag)
