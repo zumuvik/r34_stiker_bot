@@ -120,30 +120,26 @@ async def _live_fetch(
     Используется внутри ``fetch_nsfw_content`` после cache-miss,
     а также фоновым прогревателем.
     """
-    # ── rule34 ─
+    # ── Rule34 / e621 ─────────────────────────────────
     if tag is not None and (
-        config.is_femboy_tag(tag)
-        or config.is_furry_tag(tag)
-        or config.is_anthro_tag(tag)
-        or config.is_furfem_tag(tag)
-        or config.is_feet_tag(tag)
-        or config.is_umamusume_tag(tag)
-        or config.is_video_r34_tag(tag)
-        or config.is_tentacles_tag(tag)
-        or config.is_yuri_tag(tag)
-        or config.is_femdom_tag(tag)
+        config.is_femboy_tag(tag) or config.is_furry_tag(tag)
+        or config.is_anthro_tag(tag) or config.is_furfem_tag(tag)
+        or config.is_feet_tag(tag) or config.is_umamusume_tag(tag)
+        or config.is_video_r34_tag(tag) or config.is_tentacles_tag(tag)
+        or config.is_yuri_tag(tag) or config.is_femdom_tag(tag)
     ):
+        if tag in config.E621_API_TAGS:
+            try:
+                return await _log_call(tag, "e621", _fetch_e621_photo, tag)
+            except Exception:
+                logger.error("[%s] e621 FAILED → trying rule34 fallback", tag)
+        else:
+            logger.debug("[%s] нет e621-маппинга → сразу rule34", tag)
+
         try:
             return await _log_call(tag, "rule34", _fetch_rule34_photo, tag)
         except Exception:
-            logger.error("[%s] rule34 FAILED", tag)
-            # Fallback на e621 для тегов, у которых есть e621-маппинг
-            if tag in config.E621_API_TAGS:
-                try:
-                    logger.info("[%s] rule34 FAILED → пробуем e621", tag)
-                    return await _log_call(tag, "e621", _fetch_e621_photo, tag)
-                except Exception:
-                    logger.error("[%s] e621 fallback тоже FAILED", tag)
+            logger.error("[%s] rule34 fallback also FAILED", tag)
             return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
     # ── Purrbot (GIF) ─────────────────────────────────
@@ -401,16 +397,21 @@ MAX_E621_RETRIES: int = 3
 
 
 def _e621_media_type(ext: str) -> str:
-    """Определяет media_type по расширению файла e621."""
-    return "video" if ext.lower() in ("gif", "webm") else "photo"
+    """Определяет media_type по расширению файла e621.
+    
+    ``.gif`` → ``"video"`` (спойлер через InputMediaAnimation).
+    Всё остальное (включая ``.webm``) — ``"photo"`` или отсеивается.
+    """
+    return "video" if ext.lower() == "gif" else "photo"
 
 
 async def _fetch_e621_photo(bot_tag: str) -> tuple[str, str, str]:
     """
     Запрашивает NSFW-контент через e621.net API (limit=5, random pick).
 
-    Для тега ``video`` отбирает только анимации (.gif/.webm).
-    Для остальных — .gif/.webm возвращаются как media_type="video".
+    Для тега ``video`` отбирает только ``.gif`` (Telegram ломает спойлер
+    на ``.webm`` при инлайн-редактировании).
+    ``.webm`` полностью исключается из выборки как неподдерживаемый формат.
 
     Логи: ``[e621] [<bot_tag>] HTTP <status> <posts_count> <valid_count>``
     """
@@ -451,13 +452,14 @@ async def _fetch_e621_photo(bot_tag: str) -> tuple[str, str, str]:
                         )
                         raise ValueError("e621 вернул пустой список постов")
 
-                    # Отбираем посты с file.url
+                    # Отбираем посты с file.url, исключая .webm
                     valid = [
                         p for p in posts
                         if p.get("file") and p["file"].get("url")
+                        and p["file"].get("ext", "").lower() != "webm"
                     ]
 
-                    # Для тега "video" фильтруем только анимации
+                    # Для тега "video" фильтруем ТОЛЬКО .gif
                     if bot_tag == "video":
                         anim = [p for p in valid if _e621_media_type(p["file"].get("ext", "")) == "video"]
                         if anim:
@@ -467,7 +469,7 @@ async def _fetch_e621_photo(bot_tag: str) -> tuple[str, str, str]:
                                 "[e621] [%s] 0 animated posts out of %d → next attempt",
                                 bot_tag, len(valid),
                             )
-                            raise ValueError("e621: нет анимаций на странице")
+                            raise ValueError("e621: нет GIF на странице")
 
                     valid_count = len(valid)
                     logger.debug(

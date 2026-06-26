@@ -729,8 +729,8 @@ class TestHandleVerifyCallback:
         assert kwargs["media"].has_spoiler is True
 
     @pytest.mark.asyncio
-    async def test_inline_path_gif_uses_input_media_video(self, mock_edit):
-        """Инлайн GIF → InputMediaVideo с has_spoiler."""
+    async def test_inline_path_gif_uses_input_media_animation(self, mock_edit):
+        """Инлайн GIF → InputMediaAnimation с has_spoiler (InputMediaVideo ломает спойлер)."""
         callback = self._make_inline_callback("neko_gif")
 
         with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
@@ -738,9 +738,8 @@ class TestHandleVerifyCallback:
 
         mock_edit.assert_awaited_once()
         _args, kwargs = mock_edit.call_args
-        assert isinstance(kwargs["media"], InputMediaVideo)
+        assert isinstance(kwargs["media"], InputMediaAnimation)
         assert kwargs["media"].has_spoiler is True
-        assert kwargs["media"].supports_streaming is True
 
     @pytest.mark.asyncio
     async def test_inline_edit_failure_falls_back(self, mock_edit):
@@ -1072,17 +1071,16 @@ class TestHandleMoreCallback:
         return callback
 
     @pytest.mark.asyncio
-    async def test_more_video_uses_InputMediaVideo(self, mock_bot_edit):
-        """GIF-тег → InputMediaVideo (со spoiler, надёжнее InputMediaAnimation)."""
+    async def test_more_video_uses_InputMediaAnimation(self, mock_bot_edit):
+        """GIF-тег → InputMediaAnimation (InputMediaVideo ломает спойлер на .gif)."""
         callback = self._make_more_video_callback("neko_gif")
 
         with _mock_aiohttp_get(json_data=_PURRBOT_GIF_JSON):
             await bot.handle_more_callback(callback)
 
         _args, kwargs = mock_bot_edit.call_args
-        assert isinstance(kwargs["media"], InputMediaVideo)
+        assert isinstance(kwargs["media"], InputMediaAnimation)
         assert kwargs["media"].has_spoiler is True
-        assert kwargs["media"].supports_streaming is True
 
     @pytest.mark.asyncio
     async def test_more_video_edit_failure_falls_back_to_photo(self, mock_bot_edit):
@@ -1099,7 +1097,7 @@ class TestHandleMoreCallback:
         assert mock_bot_edit.call_count == 2
         first_call = mock_bot_edit.call_args_list[0]
         second_call = mock_bot_edit.call_args_list[1]
-        assert isinstance(first_call.kwargs["media"], InputMediaVideo)
+        assert isinstance(first_call.kwargs["media"], InputMediaAnimation)
         assert first_call.kwargs["media"].has_spoiler is True
         assert isinstance(second_call.kwargs["media"], InputMediaPhoto)
         assert "http.cat" in second_call.kwargs["media"].media

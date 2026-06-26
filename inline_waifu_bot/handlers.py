@@ -51,18 +51,20 @@ def _build_media(
     caption: str,
 ) -> InputMediaAnimation | InputMediaPhoto | InputMediaVideo:
     """
-    Создаёт ``InputMediaPhoto`` / ``InputMediaVideo`` / ``InputMediaAnimation``
-    с ``has_spoiler=True``.
+    Полиморфный factory: выбирает правильный контейнер ``InputMedia``
+    для надёжного ``has_spoiler=True``.
 
-    Все типы анимаций/видео идут через ``InputMediaVideo`` — спойлер
-    работает надёжнее, чем через ``InputMediaAnimation``.
-    ``InputMediaAnimation`` используется только как fallback, если
-    ``media_type="animation"``.
+    * **``.gif`` + ``"animation"``** → ``InputMediaAnimation``
+      (Telegram полностью ломает спойлер на ``.gif`` внутри
+      ``InputMediaVideo`` при инлайн-редактировании).
+    * **``.mp4`` + ``"video"``** → ``InputMediaVideo`` (настоящие видео).
+    * **Всё остальное** → ``InputMediaPhoto``.
     """
-    if media_url.lower().endswith(".gif") or media_type == "video":
-        return InputMediaVideo(media=media_url, caption=caption, has_spoiler=True, supports_streaming=True)
-    if media_type == "animation":
+    url_lower = media_url.lower()
+    if url_lower.endswith(".gif") or media_type == "animation":
         return InputMediaAnimation(media=media_url, caption=caption, has_spoiler=True)
+    if media_type == "video" or url_lower.endswith(".mp4"):
+        return InputMediaVideo(media=media_url, caption=caption, has_spoiler=True, supports_streaming=True)
     return InputMediaPhoto(media=media_url, caption=caption, has_spoiler=True)
 
 
@@ -380,29 +382,12 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     # edit_message_media с has_spoiler (иногда не применяется, но выбора нет).
     if callback.inline_message_id:
         try:
-            if media_url.lower().endswith(".gif"):
-                await bot.edit_message_media(
-                    inline_message_id=callback.inline_message_id,
-                    media=InputMediaVideo(
-                        media=media_url,
-                        caption=caption,
-                        parse_mode="HTML",
-                        has_spoiler=True,
-                        supports_streaming=True,
-                    ),
-                    reply_markup=markup,
-                )
-            else:
-                await bot.edit_message_media(
-                    inline_message_id=callback.inline_message_id,
-                    media=InputMediaPhoto(
-                        media=media_url,
-                        caption=caption,
-                        parse_mode="HTML",
-                        has_spoiler=True,
-                    ),
-                    reply_markup=markup,
-                )
+            media_obj = _build_media(media_url, media_type, caption)
+            await bot.edit_message_media(
+                inline_message_id=callback.inline_message_id,
+                media=media_obj,
+                reply_markup=markup,
+            )
         except Exception as exc:
             logger.warning(
                 "[u:%s] verify inline edit failed (type=%s): %s → cat fallback",
