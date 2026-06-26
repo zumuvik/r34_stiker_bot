@@ -14,6 +14,7 @@
 """
 
 import asyncio
+import contextvars
 import logging
 import secrets
 import random as _random
@@ -28,6 +29,32 @@ from . import database
 logger = logging.getLogger(__name__)
 
 PURRBOT_API_BASE = "https://api.purrbot.site"
+
+# ── Per-request fallback cascade tracker ─────────────────────────
+# Позволяет накопить цепочку отказов провайдеров и в конце
+# вывести единую диагностическую строку.
+_FALLBACK_CHAIN: contextvars.ContextVar[list[str]] = (
+    contextvars.ContextVar("_fallback_chain", default=[])
+)
+
+
+def _reset_chain() -> None:
+    """Очищает цепочку отказов для нового запроса."""
+    _FALLBACK_CHAIN.set([])
+
+
+def _push_chain(provider: str, reason: str) -> None:
+    """Добавляет звено в цепочку отказов."""
+    chain: list[str] = _FALLBACK_CHAIN.get()
+    chain.append(f"{provider}: {reason}")
+    _FALLBACK_CHAIN.set(chain)
+
+
+def _dump_chain() -> str:
+    """Склеивает цепочку отказов в строку вида ``e621: HTTP 403 → yande.re: HTTP 500 → rule34: exhausted``."""
+    chain = _FALLBACK_CHAIN.get()
+    return " → ".join(chain) if chain else "(пустая цепочка)"
+
 
 # ── Deduplication cache (оперативная, не сохраняется) ────────────
 _RECENT_URLS: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
@@ -55,12 +82,13 @@ async def _validate_url(url: str) -> bool:
             async with session.get(url) as resp:
                 ct = resp.headers.get("Content-Type", "") or ""
                 if resp.status != 200:
-                    logger.debug(
-                        "HEAD-валидация %s … %d (не 200)",
+                    logger.warning(
+                        "валидация URL %s … HTTP %d (ожидался 200)",
                         url[:60], resp.status,
                     )
                 return resp.status == 200 and ct.startswith("image/")
-    except Exception:
+    except Exception as exc:
+        logger.warning("валидация URL %s … исключение: %s: %s", url[:60], type(exc).__name__, exc)
         return False
 
 
@@ -118,6 +146,8 @@ async def _live_fetch(
     Используется внутри ``fetch_nsfw_content`` после cache-miss,
     а также фоновым прогревателем.
     """
+    _reset_chain()
+
     # ── Rule34 / e621 ─────────────────────────────────
     if tag is not None and (
         config.is_femboy_tag(tag) or config.is_furry_tag(tag)
@@ -129,26 +159,30 @@ async def _live_fetch(
         if tag in config.E621_API_TAGS:
             try:
                 return await _log_call(tag, "e621", _fetch_e621_photo, tag)
-            except Exception:
+            except Exception as exc:
+                _push_chain("e621", f"{type(exc).__name__}: {exc}")
                 logger.error("[%s] e621 FAILED → checking Yande.re intermediate fallback", tag)
 
                 # Intermediate Tier: Yande.re (human/anime-борда)
                 if tag in config.YANDE_RE_TAGS:
                     try:
                         return await _log_call(tag, "yandere", _fetch_yandere_photo, tag)
-                    except Exception:
+                    except Exception as exc2:
+                        _push_chain("yande.re", f"{type(exc2).__name__}: {exc2}")
                         logger.error("[%s] yandere FAILED → trying final rule34 fallback", tag)
 
                 # Final Tier: Rule34.xxx
                 try:
                     return await _log_call(tag, "rule34", _fetch_rule34_photo, tag)
-                except Exception:
+                except Exception as exc3:
+                    _push_chain("rule34", f"{type(exc3).__name__}: {exc3}")
                     logger.error("[%s] final rule34 fallback also FAILED", tag)
         else:
             logger.debug("[%s] нет e621-маппинга → сразу rule34", tag)
             try:
                 return await _log_call(tag, "rule34", _fetch_rule34_photo, tag)
-            except Exception:
+            except Exception as exc:
+                _push_chain("rule34", f"{type(exc).__name__}: {exc}")
                 logger.error("[%s] rule34 fallback also FAILED", tag)
 
     # ── Purrbot (GIF) ─────────────────────────────────
@@ -159,6 +193,8 @@ async def _live_fetch(
             return (url, "video", tag)
         except Exception:
             logger.error("[%s] purrbot FAILED, falling back to cat", tag)
+            _push_chain("purrbot", "исключение (см. лог выше)")
+            logger.error("[%s] FALLBACK CASCADE: %s", tag, _dump_chain())
             return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
     # ── Waifu.im ──────────────────────────────────────
@@ -168,6 +204,8 @@ async def _live_fetch(
             return (url, "photo", tag)
         except Exception:
             logger.error("[%s] waifu FAILED", tag)
+            _push_chain("waifu.im", "исключение (см. лог выше)")
+            logger.error("[%s] FALLBACK CASCADE: %s", tag, _dump_chain())
             return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
     # ── Random (50/50) ─────────────────────────────────
@@ -188,6 +226,8 @@ async def _live_fetch(
                 display = actual_tag or "random"
                 return (url, "photo", display)
 
+    # Ни один провайдер не сработал — финальный фолбэк
+    logger.error("[%s] FALLBACK CASCADE: %s", tag or "random", _dump_chain())
     return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
 
@@ -219,9 +259,14 @@ async def fetch_nsfw_content(
         return (item["url"], item["media_type"], cache_key)
 
     # ── 2. Живой запрос + валидация (до 3 попыток) ────────
+    fail_reasons: list[str] = []
     for attempt in range(1, 4):
         url, media_type, display_tag = await _live_fetch(tag)
         if url == config.FALLBACK_IMAGE_URL:
+            logger.error(
+                "[%s] ATTEMPT %d/3: _live_fetch сразу вернул fallback (все провайдеры отказали)",
+                cache_key, attempt,
+            )
             return (url, media_type, display_tag)
 
         if await _validate_url(url):
@@ -229,11 +274,18 @@ async def fetch_nsfw_content(
             return (url, media_type, display_tag)
 
         logger.warning(
-            "[%s] URL не прошёл валидацию (попытка %d/3): %s",
-            cache_key, attempt, url[:60],
+            "[%s] ATTEMPT %d/3: провайдер вернул URL, но валидация не прошла (HTTP не 200 или не image/*). URL: %s",
+            cache_key, attempt, url[:80],
         )
+        fail_reasons.append(f"попытка {attempt}: URL {url[:60]} не прошёл HEAD-валидацию")
 
-    logger.error("[%s] все 3 попытки живого запроса дали битые URL", cache_key)
+    logger.error(
+        "[%s] FETCH FAILED: все 3 попытки живого запроса дали битые URL. "
+        "Состояние пула: %d элементов для этого тега. Причины: %s",
+        cache_key,
+        await asyncio.to_thread(database.get_pool_count, cache_key),
+        "; ".join(fail_reasons),
+    )
     return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
 
