@@ -374,12 +374,13 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     stats_line = await _generate_stats(creator_id, callback.from_user.username)
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
     await asyncio.to_thread(database.increment_tag_count, creator_id, display_tag)
-    caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
+    if media_url == config.FALLBACK_IMAGE_URL or display_tag == "error":
+        caption = f"⚠️ <b>API Провайдеров недоступны (Включен Fallback)</b>\n\n{stats_line}"
+    else:
+        caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
     markup = build_markup(tag, creator_id)
 
     # ── Инлайн-путь: сообщение из инлайн-режима (callback.inline_message_id) ──
-    # Нельзя отправить новое сообщение — нет chat_id. Редактируем через
-    # edit_message_media с has_spoiler (иногда не применяется, но выбора нет).
     if callback.inline_message_id:
         try:
             media_obj = _build_media(media_url, media_type, caption)
@@ -393,16 +394,16 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
                 "[u:%s] verify inline edit failed (type=%s): %s → cat fallback",
                 creator_id, media_type, exc,
             )
+            fallback_caption = (
+                f"⚠️ <b>API Провайдеров недоступны (Включен Fallback)</b>\n\n"
+                f"{stats_line}"
+            )
             try:
                 await bot.edit_message_media(
                     inline_message_id=callback.inline_message_id,
                     media=InputMediaPhoto(
                         media=config.FALLBACK_IMAGE_URL,
-                        caption=(
-                            f"<b>NSFW Anime</b> (фолбэк)\n"
-                            f"Тег: {display_tag}\n"
-                            f"{stats_line}"
-                        ),
+                        caption=fallback_caption,
                         parse_mode="HTML",
                         has_spoiler=True,
                     ),
@@ -412,12 +413,11 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
                 logger.exception("[u:%s] verify: inline fallback also failed", creator_id)
 
     # ── Прямое сообщение: удаляем текст-заглушку и шлём новое медиа ──
-    # (гарантирует has_spoiler от рождения).
     else:
         try:
             await callback.message.delete()
         except Exception:
-            pass  # если не выйдет удалить — не страшно
+            pass
 
         try:
             if media_url.lower().endswith(".gif"):
@@ -443,15 +443,15 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
                 "[u:%s] verify send failed (type=%s): %s → cat fallback",
                 creator_id, media_type, exc,
             )
+            fallback_caption = (
+                f"⚠️ <b>API Провайдеров недоступны (Включен Fallback)</b>\n\n"
+                f"{stats_line}"
+            )
             try:
                 await bot.send_photo(
                     chat_id=callback.message.chat.id,
                     photo=config.FALLBACK_IMAGE_URL,
-                    caption=(
-                        f"<b>NSFW Anime</b> (фолбэк)\n"
-                        f"Тег: {display_tag}\n"
-                        f"{stats_line}"
-                    ),
+                    caption=fallback_caption,
                     parse_mode="HTML",
                     has_spoiler=True,
                     reply_markup=markup,
@@ -527,7 +527,10 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     )
     # Трекинг реального тега (не "random") в БД
     await asyncio.to_thread(database.increment_tag_count, clicker_id, display_tag)
-    caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
+    if media_url == config.FALLBACK_IMAGE_URL or display_tag == "error":
+        caption = f"⚠️ <b>API Провайдеров недоступны (Включен Fallback)</b>\n\n{stats_line}"
+    else:
+        caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
     media_obj = _build_media(media_url, media_type, caption)
 
     try:

@@ -3,6 +3,7 @@
 """
 
 import os
+import secrets
 import sys
 
 
@@ -97,9 +98,18 @@ VIDEO_TAGS: frozenset[str] = frozenset({
 
 # Маппинг видео-тегов в эндпоинты Purrbot.
 VIDEO_ENDPOINTS: dict[str, str] = {
-    "neko_gif":   "v2/img/nsfw/neko/gif",
-    "nsfw_gif":   "v2/img/nsfw/neko/gif",
+    "neko_gif": "v2/img/nsfw/neko/gif",
 }
+
+# Дополнительные NSFW GIF-эндпоинты Purrbot для nsfw_gif (случайный выбор).
+PURR_NSFW_GIFS: list[str] = [
+    "v2/img/nsfw/anal/gif",
+    "v2/img/nsfw/blowjob/gif",
+    "v2/img/nsfw/cum/gif",
+    "v2/img/nsfw/fuck/gif",
+    "v2/img/nsfw/pussy/gif",
+    "v2/img/nsfw/threesome/gif",
+]
 
 # Теги для новых провайдеров (НЕ входят в PHOTO_TAGS / VIDEO_TAGS,
 # поэтому не попадают в random-выборку).
@@ -347,5 +357,13 @@ def is_femdom_tag(tag: str | None) -> bool:
 
 
 def get_video_endpoint(tag: str) -> str:
-    """Возвращает эндпоинт Purrbot для видео-тега. Если тег не найден — возвращает сам тег."""
+    """
+    Возвращает эндпоинт Purrbot для видео-тега.
+
+    * ``nsfw_gif`` — случайный выбор из ``PURR_NSFW_GIFS`` (разнообразие).
+    * ``neko_gif`` — ``v2/img/nsfw/neko/gif``.
+    * Если тег не найден — возвращает сам тег (для обратной совместимости).
+    """
+    if tag == "nsfw_gif":
+        return secrets.choice(PURR_NSFW_GIFS)
     return VIDEO_ENDPOINTS.get(tag, tag)

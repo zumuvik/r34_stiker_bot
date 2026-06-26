@@ -45,8 +45,9 @@ from inline_waifu_bot import api as _api
 
 @pytest.fixture(autouse=True)
 def _patch_url_validation():
-    """Очищаем кэши URL и мокаем валидацию (не ходим в CDN)."""
-    _api._VALIDATED_CACHE.clear()
+    """Очищаем кэши URL/пул и мокаем валидацию (не ходим в CDN)."""
+    from inline_waifu_bot import database as _db
+    _db.clear_pool()
     _api._RECENT_URLS.clear()
     with patch("inline_waifu_bot.api._validate_url", AsyncMock(return_value=True)):
         yield
@@ -1546,7 +1547,7 @@ class TestStatsInVerifyCallback:
         assert "Вы подододрочель" in caption
         assert "✅" in caption
         assert "+25 мл спермы" in caption
-        assert "фолбэк" in caption
+        assert "API Провайдеров недоступны (Включен Fallback)" in caption
 
 
 

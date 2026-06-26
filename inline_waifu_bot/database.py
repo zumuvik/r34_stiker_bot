@@ -47,6 +47,16 @@ def init_db() -> None:
             PRIMARY KEY (user_id, tag)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS content_pool (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            tag        TEXT    NOT NULL,
+            url        TEXT    NOT NULL,
+            media_type TEXT    NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_content_pool_tag ON content_pool(tag)")
     conn.commit()
     logger.info("Database initialised at %s", DB_PATH)
 
@@ -135,3 +145,64 @@ def get_user_favorite_tags(user_id: int, limit: int = 3) -> list[dict]:
         (user_id, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ─────────────────── Content Pool ───────────────────
+
+
+POOL_SIZE: int = 10
+"""Сколько проверенных URL держать в БД на каждый тег."""
+
+
+def pop_pool_item(tag: str) -> dict | None:
+    """
+    Извлекает один элемент из пула для тега (FIFO).
+    Удаляет строку из БД в той же транзакции.
+
+    Returns:
+        ``{"url": str, "media_type": str}`` или ``None`` (пул пуст).
+    """
+    with _write_lock:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT id, url, media_type FROM content_pool WHERE tag = ? ORDER BY id ASC LIMIT 1",
+            (tag,),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM content_pool WHERE id = ?", (row["id"],))
+        conn.commit()
+        return {"url": row["url"], "media_type": row["media_type"]}
+
+
+def push_pool_item(tag: str, url: str, media_type: str) -> None:
+    """Добавляет один проверенный элемент в пул для тега."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO content_pool (tag, url, media_type) VALUES (?, ?, ?)",
+        (tag, url, media_type),
+    )
+    conn.commit()
+
+
+def get_pool_count(tag: str) -> int:
+    """Возвращает количество элементов в пуле для тега."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM content_pool WHERE tag = ?", (tag,),
+    ).fetchone()
+    return row["cnt"] if row else 0
+
+
+def clear_pool() -> None:
+    """Очищает весь пул (для тестов)."""
+    conn = get_connection()
+    conn.execute("DELETE FROM content_pool")
+    conn.commit()
+
+
+def get_total_pool_count() -> int:
+    """Возвращает общее количество элементов в пуле (все теги)."""
+    conn = get_connection()
+    row = conn.execute("SELECT COUNT(*) AS cnt FROM content_pool").fetchone()
+    return row["cnt"] if row else 0

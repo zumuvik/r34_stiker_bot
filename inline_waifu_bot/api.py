@@ -23,12 +23,13 @@ from collections import defaultdict, deque
 import aiohttp
 
 from . import config
+from . import database
 
 logger = logging.getLogger(__name__)
 
 PURRBOT_API_BASE = "https://api.purrbot.site"
 
-# ── Deduplication cache ──────────────────────────────────────────
+# ── Deduplication cache (оперативная, не сохраняется) ────────────
 _RECENT_URLS: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
 
 def _is_recent(tag_key: str, url: str) -> bool:
@@ -37,30 +38,27 @@ def _is_recent(tag_key: str, url: str) -> bool:
 def _mark_seen(tag_key: str, url: str) -> None:
     _RECENT_URLS[tag_key].append(url)
 
-# ── Validated URL cache (HEAD-проверенные ссылки, до 30шт на тег) ──
-_VALIDATED_CACHE: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
-
-def _cache_pop(tag: str) -> str | None:
-    """Извлекает одну проверенную ссылку из кэша (FIFO)."""
-    q = _VALIDATED_CACHE.get(tag)
-    return q.popleft() if q and len(q) > 0 else None
-
-def _cache_push(tag: str, url: str) -> None:
-    """Добавляет проверенную ссылку в кэш."""
-    _VALIDATED_CACHE[tag].append(url)
-
 async def _validate_url(url: str) -> bool:
     """
     GET-запрос (stream): проверяет, что URL доступен и возвращает image/*.
     Таймаут 5 секунд.
     GET вместо HEAD, потому что многие CDN (waifu.im, e621, yande.re)
     не возвращают корректный Content-Type на HEAD-запросы.
+
+    Обязательно передаёт ``User-Agent`` (``config.E621_USER_AGENT``),
+    чтобы e621 CDN (static1.e621.net) не блокировал headless-запросы 403.
     """
     try:
+        headers = {"User-Agent": config.E621_USER_AGENT}
         timeout = aiohttp.ClientTimeout(total=5)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             async with session.get(url) as resp:
-                ct = resp.headers.get("Content-Type", "")
+                ct = resp.headers.get("Content-Type", "") or ""
+                if resp.status != 200:
+                    logger.debug(
+                        "HEAD-валидация %s … %d (не 200)",
+                        url[:60], resp.status,
+                    )
                 return resp.status == 200 and ct.startswith("image/")
     except Exception:
         return False
@@ -132,15 +130,26 @@ async def _live_fetch(
             try:
                 return await _log_call(tag, "e621", _fetch_e621_photo, tag)
             except Exception:
-                logger.error("[%s] e621 FAILED → trying rule34 fallback", tag)
+                logger.error("[%s] e621 FAILED → checking Yande.re intermediate fallback", tag)
+
+                # Intermediate Tier: Yande.re (human/anime-борда)
+                if tag in config.YANDE_RE_TAGS:
+                    try:
+                        return await _log_call(tag, "yandere", _fetch_yandere_photo, tag)
+                    except Exception:
+                        logger.error("[%s] yandere FAILED → trying final rule34 fallback", tag)
+
+                # Final Tier: Rule34.xxx
+                try:
+                    return await _log_call(tag, "rule34", _fetch_rule34_photo, tag)
+                except Exception:
+                    logger.error("[%s] final rule34 fallback also FAILED", tag)
         else:
             logger.debug("[%s] нет e621-маппинга → сразу rule34", tag)
-
-        try:
-            return await _log_call(tag, "rule34", _fetch_rule34_photo, tag)
-        except Exception:
-            logger.error("[%s] rule34 fallback also FAILED", tag)
-            return (config.FALLBACK_IMAGE_URL, "photo", "error")
+            try:
+                return await _log_call(tag, "rule34", _fetch_rule34_photo, tag)
+            except Exception:
+                logger.error("[%s] rule34 fallback also FAILED", tag)
 
     # ── Purrbot (GIF) ─────────────────────────────────
     if tag is not None and config.is_video_tag(tag):
@@ -190,30 +199,29 @@ async def fetch_nsfw_content(
 ) -> tuple[str, str, str]:
     """
     Запрашивает контент (фото или GIF).
-    
-    Сначала проверяет ``_VALIDATED_CACHE`` (HEAD-проверенные ссылки).
-    Если кэш пуст — живой запрос к провайдеру, затем валидация URL.
-    Если URL битый — повторяет запрос (до 3 попыток).
-    При неудаче — fallback на ``FALLBACK_IMAGE_URL``.
+
+    1. Пытается извлечь элемент из ``content_pool`` (SQLite).
+       Если найден — немедленно отдаёт и запускает фоновое
+       пополнение пула (``_replenish_pool_item``).
+
+    2. Если пул пуст — живой запрос к провайдеру (до 3 попыток
+       с валидацией URL). При неудаче — fallback.
     """
     cache_key = tag or "random"
 
-    # ── 1. Кэш ────────────────────────────────────────────
-    cached_url = _cache_pop(cache_key)
-    if cached_url:
-        logger.debug("[cache] HIT key=%s url=%s", cache_key, cached_url[:60])
-        _mark_seen(cache_key, cached_url)
-        media_type = "video" if cached_url.lower().endswith(".gif") else "photo"
-        return (cached_url, media_type, cache_key)
+    # ── 1. Пул ─────────────────────────────────────────────
+    item = await asyncio.to_thread(database.pop_pool_item, cache_key)
+    if item is not None:
+        logger.debug("[pool] HIT key=%s url=%s", cache_key, item["url"][:60])
+        _mark_seen(cache_key, item["url"])
+        # Фоновое пополнение — не ждём
+        asyncio.create_task(_replenish_pool_item(cache_key))
+        return (item["url"], item["media_type"], cache_key)
 
     # ── 2. Живой запрос + валидация (до 3 попыток) ────────
-    # NOTE: не пушим в _VALIDATED_CACHE — только warmer наполняет кэш.
-    # Иначе URL, только что полученный через live fetch, попадёт в кэш
-    # и будет немедленно возвращён при следующем запросе → дубликат.
     for attempt in range(1, 4):
         url, media_type, display_tag = await _live_fetch(tag)
         if url == config.FALLBACK_IMAGE_URL:
-            # Провайдер сам отдал фолбэк — не валидируем, отдаём как есть
             return (url, media_type, display_tag)
 
         if await _validate_url(url):
@@ -225,9 +233,35 @@ async def fetch_nsfw_content(
             cache_key, attempt, url[:60],
         )
 
-    # ── 3. Всё сломалось — фолбэк ─────────────────────────
     logger.error("[%s] все 3 попытки живого запроса дали битые URL", cache_key)
     return (config.FALLBACK_IMAGE_URL, "photo", "error")
+
+
+async def _replenish_pool_item(tag: str) -> None:
+    """
+    Фоновое пополнение пула: проверяет, что в пуле меньше
+    ``POOL_SIZE`` элементов для тега, и если да — запрашивает
+    один новый валидный URL и сохраняет в БД.
+    """
+    try:
+        current = await asyncio.to_thread(database.get_pool_count, tag)
+        if current >= database.POOL_SIZE:
+            return
+
+        url, media_type, _display = await _live_fetch(None if tag == "random" else tag)
+        if url == config.FALLBACK_IMAGE_URL:
+            logger.warning("[replenish] %s: все провайдеры отказали, нечем пополнить пул", tag)
+            return
+
+        if not await _validate_url(url):
+            logger.warning("[replenish] %s: URL не прошёл валидацию после каскадного fallback'а", tag)
+            return
+
+        _mark_seen(tag, url)
+        await asyncio.to_thread(database.push_pool_item, tag, url, media_type)
+        logger.debug("[replenish] %s: добавлен %s", tag, url[:60])
+    except Exception:
+        logger.exception("[replenish] %s: ошибка пополнения пула", tag)
 
 
 # ─────────────────── Waifu.im (фото) ───────────────────
@@ -722,9 +756,8 @@ async def _fetch_rule34_photo(bot_tag: str) -> tuple[str, str, str]:
 async def _warm_single_tag(tag: str | None) -> None:
     """Одна итерация прогрева для одного тега."""
     cache_key = tag or "random"
-    # Сколько ещё можем добавить (до 30)
-    current = len(_VALIDATED_CACHE.get(cache_key, []))
-    need = 30 - current
+    current = await asyncio.to_thread(database.get_pool_count, cache_key)
+    need = database.POOL_SIZE - current
     if need <= 0:
         return
 
@@ -740,13 +773,13 @@ async def _warm_single_tag(tag: str | None) -> None:
 
     for _ in range(need):
         try:
-            url, _media_type, _display = await _live_fetch(tag)
+            url, media_type, _display = await _live_fetch(tag)
             if url == config.FALLBACK_IMAGE_URL:
                 await asyncio.sleep(sleep_sec)
                 continue
             if await _validate_url(url):
                 _mark_seen(cache_key, url)
-                _cache_push(cache_key, url)
+                await asyncio.to_thread(database.push_pool_item, cache_key, url, media_type)
         except Exception:
             pass
         await asyncio.sleep(sleep_sec)
@@ -754,16 +787,15 @@ async def _warm_single_tag(tag: str | None) -> None:
 
 async def _cache_warmer_loop() -> None:
     """
-    Фоновый цикл: прогревает ``_VALIDATED_CACHE`` для всех тегов.
-    
-    Проходит по очереди тегов, заполняет до 30 проверенных URL на тег.
-    Полный цикл занимает ~несколько минут (зависит от кол-ва тегов).
+    Фоновый цикл: прогревает ``content_pool`` (SQLite) для всех тегов.
+
+    Проходит по очереди тегов, заполняет до ``POOL_SIZE`` проверенных
+    URL на тег. Полный цикл занимает ~несколько минут.
     Перезапускается каждые 10 минут.
     """
-    logger.info("[warmer] прогреватель кэша запущен")
+    logger.info("[warmer] прогреватель пула запущен")
     while True:
         # Сначала прогреваем "горячие" теги (waifu.im / purrbot, без rule34)
-        # rule34-теги прогреваются медленно (3s пауза) из-за rate-limit
         hot_tags = ["random", "maid", "ero", "waifu", "hentai", "ass", "oppai",
                      "milf", "neko_gif", "nsfw_gif"]
         for tag in hot_tags:
@@ -771,7 +803,7 @@ async def _cache_warmer_loop() -> None:
                 await _warm_single_tag(tag)
             except Exception:
                 logger.exception("[warmer] ошибка при прогреве %s", tag)
-            await asyncio.sleep(1)  # пауза между тегами
+            await asyncio.sleep(1)
 
         # Потом остальные
         others = sorted(t for t in config.VALID_TAGS if t not in hot_tags)
@@ -782,8 +814,6 @@ async def _cache_warmer_loop() -> None:
                 logger.exception("[warmer] ошибка при прогреве %s", tag)
             await asyncio.sleep(1)
 
-        logger.info(
-            "[warmer] цикл завершён, всего URL в кэше: %d",
-            sum(len(q) for q in _VALIDATED_CACHE.values()),
-        )
+        total = await asyncio.to_thread(database.get_total_pool_count)
+        logger.info("[warmer] цикл завершён, всего URL в пуле: %d", total)
         await asyncio.sleep(600)  # следующий цикл через 10 минут
