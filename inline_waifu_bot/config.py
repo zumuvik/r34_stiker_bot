@@ -140,6 +140,11 @@ E621_API_TAGS: dict[str, str] = {
     # Fallback для feet/heels если yande.re лёг (с исключением фури).
     "feet":  "feet rating:explicit -loli -shota -male -anthro -furry",
     "heels": "high_heels rating:explicit -loli -shota -male -anthro -furry",
+    # Fallback для rule34-тегов когда r34 не отвечает
+    "video":     "animated rating:explicit -loli -shota",
+    "tentacles": "tentacles rating:explicit -loli -shota",
+    "yuri":      "yuri rating:explicit -loli -shota",
+    "femdom":    "femdom rating:explicit -loli -shota",
 }
 """Маппинг тегов бота → строки поиска e621."""
 

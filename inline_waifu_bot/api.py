@@ -400,9 +400,17 @@ async def _fetch_purrbot(endpoint: str) -> str:
 MAX_E621_RETRIES: int = 3
 
 
+def _e621_media_type(ext: str) -> str:
+    """Определяет media_type по расширению файла e621."""
+    return "video" if ext.lower() in ("gif", "webm") else "photo"
+
+
 async def _fetch_e621_photo(bot_tag: str) -> tuple[str, str, str]:
     """
-    Запрашивает NSFW-фото через e621.net API (limit=5, random pick).
+    Запрашивает NSFW-контент через e621.net API (limit=5, random pick).
+
+    Для тега ``video`` отбирает только анимации (.gif/.webm).
+    Для остальных — .gif/.webm возвращаются как media_type="video".
 
     Логи: ``[e621] [<bot_tag>] HTTP <status> <posts_count> <valid_count>``
     """
@@ -443,10 +451,24 @@ async def _fetch_e621_photo(bot_tag: str) -> tuple[str, str, str]:
                         )
                         raise ValueError("e621 вернул пустой список постов")
 
+                    # Отбираем посты с file.url
                     valid = [
                         p for p in posts
                         if p.get("file") and p["file"].get("url")
                     ]
+
+                    # Для тега "video" фильтруем только анимации
+                    if bot_tag == "video":
+                        anim = [p for p in valid if _e621_media_type(p["file"].get("ext", "")) == "video"]
+                        if anim:
+                            valid = anim
+                        else:
+                            logger.debug(
+                                "[e621] [%s] 0 animated posts out of %d → next attempt",
+                                bot_tag, len(valid),
+                            )
+                            raise ValueError("e621: нет анимаций на странице")
+
                     valid_count = len(valid)
                     logger.debug(
                         "[e621] [%s] HTTP 200, %d posts, %d valid (attempt %d/%d)",
@@ -455,8 +477,8 @@ async def _fetch_e621_photo(bot_tag: str) -> tuple[str, str, str]:
 
                     if not valid:
                         logger.warning(
-                            "[e621] [%s] 0 valid posts out of %d (attempt %d/%d)",
-                            bot_tag, posts_count, attempt, MAX_E621_RETRIES,
+                            "[e621] [%s] 0 valid posts (attempt %d/%d)",
+                            bot_tag, attempt, MAX_E621_RETRIES,
                         )
                         raise ValueError("e621: нет валидных постов")
 
@@ -464,16 +486,20 @@ async def _fetch_e621_photo(bot_tag: str) -> tuple[str, str, str]:
                     for pick in range(min(5, len(valid))):
                         chosen = _random.choice(valid)
                         url = chosen["file"]["url"]
+                        ext = chosen["file"].get("ext", "")
+                        mtype = _e621_media_type(ext)
                         if not _is_recent(bot_tag, url):
                             _mark_seen(bot_tag, url)
-                            return (url, "photo", bot_tag)
+                            return (url, mtype, bot_tag)
                         valid.remove(chosen)
 
                     # Все были в кэше — отдаём последний
                     url = chosen["file"]["url"]
+                    ext = chosen["file"].get("ext", "")
+                    mtype = _e621_media_type(ext)
                     _mark_seen(bot_tag, url)
                     logger.debug("[e621] [%s] all %d posts were recent, returning last", bot_tag, posts_count)
-                    return (url, "photo", bot_tag)
+                    return (url, mtype, bot_tag)
 
         except ValueError as exc:
             last_error = exc
