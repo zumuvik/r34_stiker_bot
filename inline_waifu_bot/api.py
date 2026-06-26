@@ -227,6 +227,7 @@ async def _live_fetch(
                 return (url, "photo", display)
 
     # Ни один провайдер не сработал — финальный фолбэк
+    _push_chain("_live_fetch", f"тег={tag!r} не совпал ни с одним провайдером")
     logger.error("[%s] FALLBACK CASCADE: %s", tag or "random", _dump_chain())
     return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
@@ -825,7 +826,7 @@ async def _warm_single_tag(tag: str | None) -> None:
 
     for _ in range(need):
         try:
-            url, media_type, _display = await _live_fetch(tag)
+            url, media_type, _display = await _live_fetch(None if tag in (None, "random") else tag)
             if url == config.FALLBACK_IMAGE_URL:
                 await asyncio.sleep(sleep_sec)
                 continue
