@@ -124,12 +124,12 @@ handlers.py           api.py                         Провайдеры
 ## Теги и провайдеры
 
 | Теги | Провайдер (каскад) | Тип контента |
-|---|---|---|---|
-| `waifu`, `maid`, `ero`, `hentai`, `ass`, `oppai`, `milf`, `oral`, `paizuri`, `ecchi`, `selfies`, `uniform`, `marin-kitagawa`, `mori-calliope`, `raiden-shogun` | **Waifu.im** | Фото (JPG/PNG) |
-| `neko_gif` | **Purrbot API** `neko/gif` | GIF |
-| `nsfw_gif` | **Purrbot API** (случайный из 6 категорий: anal, blowjob, cum, fuck, pussy, threesome) | GIF |
-| `femboy`, `feet`, `heels`, `umamusume` | **e621.net → Yande.re → Rule34.xxx** | Фото + GIF |
-| `furry`, `anthro`, `furfem`, `video`, `tentacles`, `yuri`, `femdom` | **e621.net → Rule34.xxx** | Фото + GIF |
+|------|-------------------|---------------|
+| `waifu`, `maid`, `ero`, `hentai`, `ass`, `oppai`, `milf`, `oral`, `paizuri`, `ecchi`, `selfies`, `uniform`, `marin-kitagawa`, `mori-calliope`, `raiden-shogun` | **Waifu.im** | Фото |
+| `neko_gif` | **Purrbot** `neko/gif` | GIF |
+| `nsfw_gif` | **Purrbot** (случайный из 6 категорий) | GIF |
+| `femboy`, `feet`, `heels`, `umamusume` | **e621 → Yande.re → Rule34** | Фото + GIF |
+| `furry`, `anthro`, `furfem`, `video`, `tentacles`, `yuri`, `femdom` | **e621 → Rule34** | Фото + GIF |
 | `random` | 50/50 Waifu.im / Purrbot | Фото или GIF |
 
 ### Детали провайдеров
