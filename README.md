@@ -4,9 +4,13 @@ Telegram-бот, работающий исключительно в **инлай
 `@bot_username <тег>` в любом чате и получает NSFW-контент под спойлером.
 
 Поддерживает **фото** (Waifu.im), **анимации/GIF** (Purrbot) и
-**специализированные теги** через **Rule34.xxx** (femboy, furry, feet, umamusume
-и другие). Встроена **система статистики спермы** с лидербордом и
-люто-беспощадными фразами.
+**специализированные теги** через каскад провайдеров **e621.net → Yande.re →
+Rule34.xxx** (femboy, furry, feet, umamusume и другие). Встроена **система
+статистики спермы** с лидербордом и люто-беспощадными фразами.
+
+Контент кэшируется в **SQLite-пуле** (10 проверенных URL на тег) для снижения
+нагрузки на API и ускорения ответа. Фоновый warmer наполняет пул при старте и
+каждые 10 минут.
 
 ---
 
@@ -65,8 +69,8 @@ inline_waifu_bot/
 ├── app.py          # Запуск поллинга, инициализация БД
 ├── core.py         # Bot + Dispatcher (aiogram)
 ├── config.py       # .env, константы, теги, маппинги
-├── api.py          # Провайдеры контента (Waifu.im, Rule34, Purrbot)
-├── database.py     # SQLite: статистика, лидерборд
+├── api.py          # Провайдеры контента + SQLite-пул + fallback-каскад
+├── database.py     # SQLite: статистика, лидерборд, content_pool
 ├── handlers.py     # aiogram-хэндлеры (inline, callback, /start)
 └── keyboard.py     # Inline-клавиатуры
 ```
@@ -74,43 +78,59 @@ inline_waifu_bot/
 ### Поток данных
 
 ```
-handlers.py           api.py                   Провайдеры
-    │                    │                        │
-    ├─ verify_18 ───────►│                        │
-    │                    ├─ fetch_nsfw_content()  │
-    │                    │  ├─ is_femboy_tag? ───►│ Rule34.xxx
-    │                    │  ├─ is_furry_tag?  ───►│ Rule34.xxx
-    │                    │  ├─ is_feet_tag?   ───►│ Rule34.xxx
-    │                    │  ├─ is_video_tag?  ───►│ Purrbot
-    │                    │  ├─ is_photo_tag?  ───►│ Waifu.im
-    │                    │  └─ tag=None ─────────►│ 50/50 Waifu/Purrbot
-    │                    │                        │
-    │◄── (url, type, tag)┤                        │
-    │                    │                        │
-    ├─ _build_media()    │                        │
-    │  └─ URL .gif? ────►│ InputMediaVideo        │
-    │     иначе ────────►│ InputMediaPhoto        │
-    │                    │   has_spoiler=True      │
-    │                    │                        │
-    └─ edit_message_media()                       │
+handlers.py           api.py                         Провайдеры
+    │                    │                              │
+    ├─ verify_18 ───────►│                              │
+    │                    ├─ fetch_nsfw_content()        │
+    │                    │  ├─ 1. pop_pool_item()  ────►│ SQLite content_pool
+    │                    │  │   hit → serve + replenish │
+    │                    │  │   miss → live fetch       │
+    │                    │  │                            │
+    │                    │  ├─ 2. _live_fetch()         │
+    │                    │  │                           │
+    │                    │  │  e621-группа:             │
+    │                    │  │   femboy/furry/feet/...   │
+    │                    │  │   ├─ e621.net (primary)   │
+    │                    │  │   ├─ Yande.re (intermed.) │
+    │                    │  │   └─ Rule34.xxx (final)   │
+    │                    │  │                           │
+    │                    │  │  waifu.im (фото):         │
+    │                    │  │   maid/ero/hentai/...     │
+    │                    │  │                           │
+    │                    │  │  purrbot (GIF):           │
+    │                    │  │   neko_gif / nsfw_gif     │
+    │                    │  │   (nsfw_gif — случайный   │
+    │                    │  │    из 6 категорий)        │
+    │                    │  │                           │
+    │                    │  │  random (tag=None):       │
+    │                    │  │   50% waifu.im / 50% GIF  │
+    │                    │  │                           │
+    │                    │  ├─ 3. HEAD-валидация URL    │
+    │                    │  │   (User-Agent для e621)   │
+    │                    │  │                           │
+    │◄── (url, type, tag)┤  └─ fallback → http.cat/500 │
+    │                    │                              │
+    ├─ _build_media()    │                              │
+    │  └─ URL .gif? ────►│ InputMediaAnimation         │
+    │     .mp4 ─────────►│ InputMediaVideo             │
+    │     иначе ────────►│ InputMediaPhoto             │
+    │                    │   has_spoiler=True           │
+    │                    │                              │
+    └─ edit_message_media()                             │
 ```
 
 ---
 
 ## Теги и провайдеры
 
-| Теги | Провайдер | Тип контента | Пример URL |
+| Теги | Провайдер (каскад) | Тип контента |
 |---|---|---|---|
-| `waifu`, `maid`, `ero`, `hentai`, `ass`, `oppai`, `milf`, `oral`, `paizuri`, `ecchi`, `selfies`, `uniform`, `marin-kitagawa`, `mori-calliope`, `raiden-shogun` | **Waifu.im** | Фото (JPG/PNG) | `https://cdn.waifu.im/...` |
-| `neko_gif`, `nsfw_gif` | **Purrbot API** | GIF | `https://cdn.purrbot.site/...` |
-| `femboy` | **Rule34.xxx** | Фото + GIF | `https://img.rule34.xxx/...` |
-| `furry` | **Rule34.xxx** | Фото + GIF | `https://img.rule34.xxx/...` |
-| `anthro` | **Rule34.xxx** | Фото + GIF | `https://img.rule34.xxx/...` |
-| `furfem` | **Rule34.xxx** | Фото + GIF | `https://img.rule34.xxx/...` |
-| `feet` | **Rule34.xxx** | Фото + GIF | `https://img.rule34.xxx/...` |
-| `heels` | **Rule34.xxx** | Фото + GIF | `https://img.rule34.xxx/...` |
-| `umamusume` | **Rule34.xxx** | Фото + GIF | `https://img.rule34.xxx/...` |
-| `random` | 50/50 Waifu.im / Purrbot | Фото или GIF | — |
+| `waifu`, `maid`, `ero`, `hentai`, `ass`, `oppai`, `milf`, `oral`, `paizuri`, `ecchi`, `selfies`, `uniform`, `marin-kitagawa`, `mori-calliope`, `raiden-shogun` | **Waifu.im** | Фото (JPG/PNG) |
+| `neko_gif` | **Purrbot API** `neko/gif` | GIF |
+| `nsfw_gif` | **Purrbot API** (случайный из 6 категорий: anal, blowjob, cum, fuck, pussy, threesome) | GIF |
+| `femboy`, `feet`, `heels`, `umamusume` | **e621.net → Yande.re → Rule34.xxx** | Фото + GIF |
+| `furry`, `anthro`, `furfem`, `video`, `tentacles`, `yuri`, `femdom` | **e621.net → Rule34.xxx** | Фото + GIF |
+| `random` | 50/50 Waifu.im / Purrbot | Фото или GIF |
 
 ### Детали провайдеров
 
@@ -120,25 +140,64 @@ handlers.py           api.py                   Провайдеры
 - Ответ: `{ items: [{ url, tags }] }`
 - До 2 попыток при дубликате URL
 
-#### Rule34.xxx
-- API: `https://api.rule34.xxx/index.php?page=dapi&s=post&q=index`
-- Требует `api_key` + `user_id` (с 2025 года)
-- Параметры: `json=1`, `tags=...`, `limit=100`, `pid=<random 1-50>`
-- Ответ: `[{ file_url, tags, rating, id }]`
-- GIF определяется по расширению `.gif` — возвращается `media_type="video"`
-- До 15 попыток вытащить неповторяющийся URL из 100 кандидатов
+#### e621.net (primary)
+- API: `https://e621.net/posts.json`
+- `limit=5`, `order:random`, до 3 ретраев
+- `.webm` исключается; для тега `video` отбираются только `.gif`
+- Требует `User-Agent` (ToS e621)
 
-#### Purrbot API
-- API: `https://api.purrbot.site/v2/img/nsfw/neko/gif`
-- Ответ: `{ link, error, response-code }`
+#### Yande.re (intermediate fallback)
+- API: `https://yande.re/post.json`
+- `limit=5`, `order:random`, без ретраев
+- Используется для `feet`, `heels`, `femboy`, `umamusume` при отказе e621
+
+#### Rule34.xxx (final fallback)
+- API: `https://api.rule34.xxx/index.php?page=dapi&s=post&q=index`
+- Перебирает страницы 1–5, `limit=200`, до 15 попыток избежать дубликата
+- GIF → `media_type="video"` для спойлера через InputMediaAnimation
+
+#### Purrbot API (GIF)
+- Базовый эндпоинт: `https://api.purrbot.site`
+- `neko_gif` → `v2/img/nsfw/neko/gif`
+- `nsfw_gif` → случайный из 6 категорий: `anal`, `blowjob`, `cum`, `fuck`, `pussy`, `threesome`
 - До 2 попыток при дубликате
 
-### Защита от повторов
+### SQLite-пул (content_pool)
 
-В `api.py` глобальный кэш `_RECENT_URLS` хранит последние 30 URL для каждого
-тега. Функции выбора случайного кандидата проверяют кэш и пропускают уже
-показанные URL. При исчерпании пула возвращается последний кандидат (повтор
+Вместо in-memory кэша `_VALIDATED_CACHE` бот использует таблицу `content_pool`
+в SQLite. Для каждого тега держится до `POOL_SIZE=10` проверенных URL.
+
+**Жизненный цикл:**
+1. **fetch_nsfw_content** сначала пытается `pop_pool_item()` из БД
+2. **Cache hit** → сразу отдаём + фоновый `_replenish_pool_item`
+3. **Cache miss** → `_live_fetch()` до 3 попыток с HEAD-валидацией
+4. **Warmer** (`_cache_warmer_loop`) заполняет пул при старте и каждые 10 минут
+5. Если все провайдеры отказали → `http.cat/500`
+
+### Дедупликация URL
+
+Два уровня защиты от повторов:
+1. **In-memory `_RECENT_URLS`** — `deque(maxlen=30)` на тег, отсекает недавно
+   показанные URL при выборе кандидата внутри провайдера.
+2. **SQLite `content_pool`** — при cache-hit URL атомарно удаляется (FIFO),
+   поэтому повтор в рамках одного цикла warmer'а невозможен.
+
+Если все кандидаты уже были показаны — возвращается последний (повтор
 допустим только в крайнем случае).
+
+### Fallback-каскад
+
+При отказе провайдера логгируется цепочка через `contextvars`:
+
+```
+FALLBACK CASCADE: e621: ValueError: e621 status 429 →
+  yande.re: ValueError: Yande.re status 503 →
+  rule34: ValueError: exhausted
+```
+
+Пользователь видит caption `⚠️ API Провайдеров недоступны (Включен Fallback)`
+вместо обычного `NSFW Anime`. При HTTP-ошибках валидации CDN (403/429)
+логируется WARNING с кодом ответа.
 
 ---
 
@@ -218,15 +277,17 @@ Generate New Key.
 случайное изменение по **тирам с весами**:
 
 | Исход | Дельта | Вес | Шанс |
-|---|---|---|---|
+|---|---|---|---|---|
 | Обычный плюс | +10 мл | 30 | 30% |
-| Хороший плюс | +25 мл | 30 | 30% |
+| Хороший плюс | +25 мл | 28 | 28% |
 | Большой плюс | +50 мл | 15 | 15% |
-| **Джекпот** | **+500 мл** | **5** | **5%** |
-| Мелкий минус | -10 мл | 12 | 12% |
-| Большой минус | -25 мл | 8 | 8% |
+| Огромный плюс | +100 мл | 10 | 10% |
+| **Джекпот** | **+500 мл** | **1** | **1%** |
+| Мелкий минус | -10 мл | 8 | 8% |
+| Средний минус | -25 мл | 6 | 6% |
+| **Капут** | **-200 мл** | **2** | **2%** |
 
-- Пол в нуле — уйти в минус нельзя.
+- Пол в нуле **УБРАН** — баланс может быть отрицательным.
 - В сумме ~80% положительных, ~20% отрицательных исходов.
 
 ### Команды
@@ -263,11 +324,14 @@ Generate New Key.
 
 ### Добавление нового тега
 
-1. В `config.py`: добавить в соответствующее `frozenset` и в `VALID_TAGS`
-2. В `config.py`: добавить запись в `RULE34_API_TAGS` (если тег идёт через rule34)
-3. В `fetch_nsfw_content` (`api.py`): если тег попадает под существующую
-   категорию — он уже обрабатывается. Если категория новая — добавить `is_*_tag()`
-   и ветку с провайдером.
+1. В `config.py`: добавить в соответствующее `frozenset`, в `VALID_TAGS`,
+   `TAG_LABELS` и `TAG_ACHIEVEMENTS`.
+2. В `config.py`: добавить маппинг в `RULE34_API_TAGS`, `E621_API_TAGS`
+   и опционально в `YANDE_RE_TAGS`.
+3. В `api.py`: если тег попадает под существующую группу (`is_*_tag()`) —
+   он уже обрабатывается каскадом. Если группа новая — добавить `is_*_tag()`
+   и ветку в `_live_fetch`.
+4. В `config.py`: обновить хелпер `is_*_tag()` для новой группы.
 
 ---
 
@@ -277,19 +341,20 @@ Generate New Key.
 r34_stiker_bot/
 ├── .env                        # Токен бота, API-ключи (в gitignore)
 ├── .gitignore
+├── Makefile                    # deploy/restart/logs/status
 ├── README.md
 ├── bot.log                     # Лог-файл (в gitignore)
 ├── bot_stats.db                # SQLite (в gitignore)
-├── test_inline_waifu_bot.py    # Pytest-тесты (1247 строк)
+├── test_inline_waifu_bot.py    # Pytest-тесты (~1780 строк)
 ├── inline_waifu_bot/
 │   ├── __init__.py             # Экспорт, инициализация
 │   ├── __main__.py             # python -m entry point
-│   ├── app.py                  # Запуск поллинга
+│   ├── app.py                  # Запуск поллинга, warmer
 │   ├── core.py                 # Bot + Dispatcher
-│   ├── config.py               # .env, теги, маппинги (248 строк)
-│   ├── api.py                  # Провайдеры: Waifu.im, Rule34, Purrbot (546 строк)
-│   ├── database.py             # SQLite: stats, leaderboard (151 строка)
-│   ├── handlers.py             # aiogram handlers: inline, verify, more, start (519 строк)
+│   ├── config.py               # .env, теги, маппинги (350 строк)
+│   ├── api.py                  # Провайдеры + SQLite-пул + каскад (870 строк)
+│   ├── database.py             # SQLite: stats, leaderboard, content_pool (200 строк)
+│   ├── handlers.py             # aiogram handlers (580 строк)
 │   └── keyboard.py             # Inline-кнопки (35 строк)
 └── venv/ / .venv/              # Виртуальное окружение
 ```
@@ -300,12 +365,12 @@ r34_stiker_bot/
 
 | Сценарий | Поведение |
 |---|---|
-| API вернул 500 | Лог + fallback на `http.cat/500` |
-| API вернул пустой массив | Лог + fallback на `http.cat/500` |
-| Таймаут (>5с) | 2 попытки, после — fallback |
-| Сетевой разрыв | 2 попытки, после — fallback |
-| GIF не прошёл как `InputMediaVideo` | Fallback на `InputMediaPhoto(http.cat/500)` |
-| Дубликат URL (не влез в кэш) | Повтор допустим при исчерпании 15 попыток |
-| Мусор в callback_data | Alert «Ошибка данных», отказ |
+| API вернул 500 | Лог + переход к следующему провайдеру в каскаде |
+| API вернул пустой массив | Лог + переход к следующему провайдеру |
+| Таймаут (>5с) | 2-3 попытки внутри провайдера, затем след. провайдер |
+| Все провайдеры отказали | `http.cat/500` + caption `⚠️ API Провайдеров недоступны` |
+| CDN блокирует HEAD-запрос (403) | Лог WARNING с кодом, след. попытка live fetch |
+| Telegram rejected media | Fallback на `InputMediaPhoto(http.cat/500)` |
+| Дубликат URL | Повтор допустим при исчерпании всех кандидатов |
 | Чужой нажал кнопку | Alert «Это сообщение создал другой пользователь» |
 | Кд не прошёл | Alert «Подожди N с» |
