@@ -49,23 +49,21 @@ def _build_media(
     media_url: str,
     media_type: str,
     caption: str,
-) -> InputMediaAnimation | InputMediaPhoto | InputMediaVideo:
+    has_spoiler: bool = True,
+) -> InputMediaAnimation | InputMediaVideo | InputMediaPhoto:
     """
-    Полиморфный factory: выбирает правильный контейнер ``InputMedia``
-    для надёжного ``has_spoiler=True``.
+    Полиморфный factory: выбирает правильный контейнер ``InputMedia``.
 
-    * **``.gif`` + ``"animation"``** → ``InputMediaAnimation``
-      (Telegram полностью ломает спойлер на ``.gif`` внутри
-      ``InputMediaVideo`` при инлайн-редактировании).
-    * **``.mp4`` + ``"video"``** → ``InputMediaVideo`` (настоящие видео).
-    * **Всё остальное** → ``InputMediaPhoto``.
+    Args:
+        has_spoiler: True (NSFW) — контент под спойлером.
+                     False (SFW) — без спойлера.
     """
     url_lower = media_url.lower()
     if url_lower.endswith(".gif") or media_type == "animation":
-        return InputMediaAnimation(media=media_url, caption=caption, has_spoiler=True)
+        return InputMediaAnimation(media=media_url, caption=caption, has_spoiler=has_spoiler)
     if media_type == "video" or url_lower.endswith(".mp4"):
-        return InputMediaVideo(media=media_url, caption=caption, has_spoiler=True, supports_streaming=True)
-    return InputMediaPhoto(media=media_url, caption=caption, has_spoiler=True)
+        return InputMediaVideo(media=media_url, caption=caption, has_spoiler=has_spoiler, supports_streaming=True)
+    return InputMediaPhoto(media=media_url, caption=caption, has_spoiler=has_spoiler)
 
 
 # ─────────────────── Хелпер: отредактировать сообщение ───────────────────
@@ -184,10 +182,19 @@ async def handle_inline_query(query: InlineQuery) -> None:
         await _answer_leaderboard_with_tags(query, creator_id)
         return
 
-    # ── Конкретный тег или произвольный запрос → верификация ────
+    # ── Определяем тег ──────────────────────────────────
     tag = config.validate_tag(query.query)
     tag_display = tag or "random"
     logger.info("[u:%s] inline query: тег='%s'", creator_id, tag)
+
+    # ── SFW-тег → показать без 18+ ────────────────────
+    if tag and config.is_sfw_tag(tag):
+        logger.info("[u:%s] sfw direct: тег='%s'", creator_id, tag)
+        article = _make_verify_article(creator_id, tag, is_sfw=True)
+        await query.answer(results=[article], cache_time=0, is_personal=True)
+        return
+
+    # ── NSFW-контент → верификация 18+ ────────────────
     article = _make_verify_article(creator_id, tag_display)
 
     await query.answer(
@@ -197,25 +204,44 @@ async def handle_inline_query(query: InlineQuery) -> None:
     )
 
 
-def _make_verify_article(creator_id: int, tag_display: str) -> InlineQueryResultArticle:
-    """Собирает InlineQueryResultArticle с кнопкой верификации для tag_display."""
+def _make_verify_article(creator_id: int, tag_display: str, is_sfw: bool = False) -> InlineQueryResultArticle:
+    """Собирает InlineQueryResultArticle для тега.
+
+    Для SFW — кнопка «Показать» без 18+.
+    Для NSFW — кнопка «Мне есть 18 лет» с верификацией.
+    """
+    if is_sfw:
+        title = f"🖼 {config.get_tag_label(tag_display)}"
+        description = config.get_tag_description(tag_display)
+        msg_text = (
+            f"🖼 <b>SFW Anime</b>\n\n"
+            f"Нажми «Показать», чтобы открыть изображение "
+            f"с тегом <code>{tag_display}</code>."
+        )
+        cb_data = f"show_sfw:{creator_id}:{tag_display}"
+        btn_text = "Показать 🖼"
+    else:
+        title = f"🔞 Подрочить на {config.get_tag_label(tag_display)}"
+        description = config.get_tag_description(tag_display)
+        msg_text = (
+            f"⚠️ <b>Контент 18+ скрыт</b>\n\n"
+            f"Подтвердите, что вам есть 18 лет, чтобы открыть "
+            f"изображение с тегом <code>{tag_display}</code>."
+        )
+        cb_data = f"verify_18:{creator_id}:{tag_display}"
+        btn_text = "Мне есть 18 лет ✅"
+
     return InlineQueryResultArticle(
         id=secrets.token_hex(8),
-        title=f"🔞 Подрочить на {config.get_tag_label(tag_display)}",
-        description="Требуется подтверждение 18+",
-        input_message_content=InputTextMessageContent(
-            message_text=(
-                f"⚠️ <b>Контент 18+ скрыт</b>\n\n"
-                f"Подтвердите, что вам есть 18 лет, чтобы открыть "
-                f"изображение с тегом <code>{tag_display}</code>."
-            ),
-        ),
+        title=title,
+        description=description,
+        input_message_content=InputTextMessageContent(message_text=msg_text),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Мне есть 18 лет ✅",
-                        callback_data=f"verify_18:{creator_id}:{tag_display}",
+                        text=btn_text,
+                        callback_data=cb_data,
                     ),
                 ]
             ]
@@ -327,7 +353,8 @@ async def _answer_leaderboard_with_tags(query: InlineQuery, user_id: int) -> Non
 
     # Все доступные теги
     for tag in sorted(config.VALID_TAGS):
-        results.append(_make_verify_article(user_id, tag))
+        is_sfw = config.is_sfw_tag(tag)
+        results.append(_make_verify_article(user_id, tag, is_sfw=is_sfw))
 
     await query.answer(
         results=results,
@@ -339,17 +366,16 @@ async def _answer_leaderboard_with_tags(query: InlineQuery, user_id: int) -> Non
 # ─────────────────── Callback: верификация 18+ → контент под спойлером ─────────
 
 
-@dp.callback_query(F.data.startswith("verify_18:"))
+@dp.callback_query(F.data.startswith("verify_18:") | F.data.startswith("show_sfw:"))
 async def handle_verify_callback(callback: CallbackQuery) -> None:
     """
-    Обрабатывает нажатие «Мне есть 18 лет ✅».
+    Обрабатывает нажатие «Мне есть 18 лет ✅» или «Показать 🖼» (SFW).
 
-    Удаляет текст-заглушку и отправляет новое сообщение с медиа
-    под спойлером. Новое сообщение создаётся сразу как медиа с
-    ``has_spoiler=True`` — так спойлер работает надёжнее, чем
-    при редактировании текста → медиа.
+    Для SFW пропускаем 18+ верификацию.
     """
-    payload = callback.data.removeprefix("verify_18:")
+    is_sfw = callback.data.startswith("show_sfw:")
+    prefix = "show_sfw:" if is_sfw else "verify_18:"
+    payload = callback.data.removeprefix(prefix)
     try:
         creator_id_str, tag_str = payload.split(":", 1)
         creator_id = int(creator_id_str)
@@ -374,8 +400,11 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     stats_line = await _generate_stats(creator_id, callback.from_user.username)
     media_url, media_type, display_tag = await fetch_nsfw_content(tag)
     await asyncio.to_thread(database.increment_tag_count, creator_id, display_tag)
+
     if media_url == config.FALLBACK_IMAGE_URL or display_tag == "error":
         caption = f"⚠️ <b>API Провайдеров недоступны (Включен Fallback)</b>\n\n{stats_line}"
+    elif is_sfw:
+        caption = f"<b>SFW Anime</b>\nТег: {display_tag}\n{stats_line}"
     else:
         caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
     markup = build_markup(tag, creator_id)
@@ -383,7 +412,7 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
     # ── Инлайн-путь: сообщение из инлайн-режима (callback.inline_message_id) ──
     if callback.inline_message_id:
         try:
-            media_obj = _build_media(media_url, media_type, caption)
+            media_obj = _build_media(media_url, media_type, caption, not is_sfw)
             await bot.edit_message_media(
                 inline_message_id=callback.inline_message_id,
                 media=media_obj,
@@ -405,7 +434,7 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
                         media=config.FALLBACK_IMAGE_URL,
                         caption=fallback_caption,
                         parse_mode="HTML",
-                        has_spoiler=True,
+                        has_spoiler=not is_sfw,
                     ),
                     reply_markup=markup,
                 )
@@ -426,7 +455,7 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
                     animation=media_url,
                     caption=caption,
                     parse_mode="HTML",
-                    has_spoiler=True,
+                    has_spoiler=not is_sfw,
                     reply_markup=markup,
                 )
             else:
@@ -435,7 +464,7 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
                     photo=media_url,
                     caption=caption,
                     parse_mode="HTML",
-                    has_spoiler=True,
+                    has_spoiler=not is_sfw,
                     reply_markup=markup,
                 )
         except Exception as exc:
@@ -453,7 +482,7 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
                     photo=config.FALLBACK_IMAGE_URL,
                     caption=fallback_caption,
                     parse_mode="HTML",
-                    has_spoiler=True,
+                    has_spoiler=not is_sfw,
                     reply_markup=markup,
                 )
             except Exception:
@@ -531,10 +560,12 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
     )
     # Трекинг реального тега (не "random") в БД
     await asyncio.to_thread(database.increment_tag_count, clicker_id, display_tag)
+    is_sfw = tag is not None and config.is_sfw_tag(tag)
+    content_label = "SFW Anime" if is_sfw else "NSFW Anime"
     if media_url == config.FALLBACK_IMAGE_URL or display_tag == "error":
         caption = f"⚠️ <b>API Провайдеров недоступны (Включен Fallback)</b>\n\n{stats_line}"
     else:
-        caption = f"<b>NSFW Anime</b>\nТег: {display_tag}\n{stats_line}"
+        caption = f"<b>{content_label}</b>\nТег: {display_tag}\n{stats_line}"
     media_obj = _build_media(media_url, media_type, caption)
 
     try:
@@ -552,11 +583,11 @@ async def handle_more_callback(callback: CallbackQuery) -> None:
         fallback = InputMediaPhoto(
             media=config.FALLBACK_IMAGE_URL,
             caption=(
-                f"<b>NSFW Anime</b> (фолбэк)\n"
+                f"<b>{content_label}</b> (фолбэк)\n"
                 f"Тег: {display_tag}\n"
                 f"{stats_line}"
             ),
-            has_spoiler=True,
+            has_spoiler=not is_sfw,
         )
         await _edit_message(callback, fallback, build_markup(tag, creator_id))
         await callback.answer()

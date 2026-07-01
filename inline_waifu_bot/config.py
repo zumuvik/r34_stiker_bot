@@ -56,7 +56,7 @@ FALLBACK_IMAGE_URL: str = "https://http.cat/500"
 API_TIMEOUT_SECONDS: int = 5
 """Таймаут HTTP-запроса к Waifu.im API (в секундах)."""
 
-BUTTON_COOLDOWN: int = 3
+BUTTON_COOLDOWN: int = 2
 """КД между нажатиями кнопки «Давай ещё!» для одного пользователя (в секундах)."""
 
 # ─────────────────── Фразы для статистики ───────────────────
@@ -127,6 +127,11 @@ YURI_TAGS: frozenset[str] = frozenset({"yuri"})
 """Юри через Rule34.xxx."""
 FEMDOM_TAGS: frozenset[str] = frozenset({"femdom"})
 """Фемдом через Rule34.xxx."""
+
+# SFW-теги (без 18+, Waifu.im с IsNsfw=False).
+SFW_TAGS: frozenset[str] = frozenset({
+    "sfw_waifu", "sfw_maid", "sfw_neko",
+})
 
 # API-эндпоинты для новых провайдеров.
 E621_API_URL: str = "https://e621.net/posts.json"
@@ -200,7 +205,7 @@ RULE34_API_TAGS: dict[str, str] = {
 """Маппинг тегов бота → строки поиска rule34.xxx."""
 
 # Объединённое множество (для валидации).
-VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS | FEMBOY_TAGS | FURRY_TAGS | ANTHRO_TAGS | FURFEM_TAGS | FEET_TAGS | UMAMUSUME_TAGS | VIDEO_R34_TAGS | TENTACLES_TAGS | YURI_TAGS | FEMDOM_TAGS)
+VALID_TAGS: frozenset[str] = frozenset(PHOTO_TAGS | VIDEO_TAGS | FEMBOY_TAGS | FURRY_TAGS | ANTHRO_TAGS | FURFEM_TAGS | FEET_TAGS | UMAMUSUME_TAGS | VIDEO_R34_TAGS | TENTACLES_TAGS | YURI_TAGS | FEMDOM_TAGS | SFW_TAGS)
 
 # Человекочитаемые названия тегов для меню.
 TAG_LABELS: dict[str, str] = {
@@ -209,7 +214,51 @@ TAG_LABELS: dict[str, str] = {
     "tentacles": "Тентакли",
     "yuri": "Юри (девочки-девочки)",
     "femdom": "Фемдом (доминирование)",
+    "sfw_waifu": "SFW Waifu",
+    "sfw_maid": "SFW Горничная",
+    "sfw_neko": "SFW Неко",
 }
+
+# Описания тегов для инлайн-меню (под названием).
+TAG_DESCRIPTIONS: dict[str, str] = {
+    "waifu":       "Случайная waifu — аниме-девушка на любой вкус",
+    "maid":        "Горничные в эротичном исполнении",
+    "ero":         "Эротичные изображения без цензуры",
+    "hentai":      "Хентай — откровенные аниме-сцены",
+    "ass":         "Акцент на попку",
+    "oppai":       "Большая грудь",
+    "milf":        "MILF — зрелые женщины",
+    "oral":        "Оральный секс (аниме)",
+    "paizuri":     "Paizuri — секс с использованием груди",
+    "ecchi":       "Ecchi — лёгкая эротика",
+    "selfies":     "Селфи в откровенном виде",
+    "uniform":     "Персонажи в униформе",
+    "marin-kitagawa": "Персонаж: Марин Китагава (My Dress-Up Darling)",
+    "mori-calliope":  "Персонаж: Мори Каллиопа (Hololive EN)",
+    "raiden-shogun":  "Персонаж: Райден Сёгун (Genshin Impact)",
+    "neko_gif":    "Анимированные неко-девушки в NSFW GIF",
+    "nsfw_gif":    "Случайный NSFW GIF из 6 категорий (анал, минет, cumshot, секс, писсинг, threesome)",
+    "femboy":      "Фембой — мальчики в женственном образе (NSFW)",
+    "furry":       "Фурри — антропоморфные животные (NSFW)",
+    "anthro":      "Антропоморфные персонажи (без футанари)",
+    "furfem":      "Женские фурри-персонажи, стройные и без футы",
+    "feet":        "Ножки и ступни в эротичном ключе",
+    "heels":       "Девушки на каблуках и в туфлях",
+    "umamusume":   "Umamusume: Pretty Derby — девушки-лошадки (NSFW)",
+    "video":       "Анимированный контент и GIF (e621 → Rule34)",
+    "tentacles":   "Тентакли — сцены с щупальцами",
+    "yuri":        "Юри — девушки с девушками",
+    "femdom":      "Фемдом — женское доминирование",
+    "random":      "Случайный контент: 50% фото (Waifu.im), 50% GIF (Purrbot)",
+    "sfw_waifu":   "Без 18+ — милые waifu, аниме-девушки в повседневной одежде",
+    "sfw_maid":    "Без 18+ — горничные, милые и опрятные, без откровенности",
+    "sfw_neko":    "Без 18+ — неко-девушки с кошачьими ушками и хвостиком",
+}
+
+
+def get_tag_description(tag: str) -> str:
+    """Возвращает описание тега для инлайн-меню."""
+    return TAG_DESCRIPTIONS.get(tag, tag)
 
 # Маппинг тегов → смешные достижения для топа.
 TAG_ACHIEVEMENTS: dict[str, str] = {
@@ -241,6 +290,9 @@ TAG_ACHIEVEMENTS: dict[str, str] = {
     "marin-kitagawa": "Марин-фаг",
     "mori-calliope":  "Мори-симпатяга",
     "raiden-shogun":  "Райден-шогун",
+    "sfw_waifu":   "SFW-вайфувод",
+    "sfw_maid":    "SFW-горничная",
+    "sfw_neko":    "SFW-котолов",
 }
 """Маппинг тегов → смешные достижения для лидерборда."""
 
@@ -354,6 +406,13 @@ def is_femdom_tag(tag: str | None) -> bool:
     if tag is None:
         return False
     return tag in FEMDOM_TAGS
+
+
+def is_sfw_tag(tag: str | None) -> bool:
+    """Является ли тег SFW-тегом (Waifu.im, без 18+)."""
+    if tag is None:
+        return False
+    return tag in SFW_TAGS
 
 
 def get_video_endpoint(tag: str) -> str:

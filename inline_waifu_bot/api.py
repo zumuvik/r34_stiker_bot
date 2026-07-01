@@ -200,11 +200,22 @@ async def _live_fetch(
     # ── Waifu.im ──────────────────────────────────────
     if tag is not None and config.is_photo_tag(tag):
         try:
-            url, actual_tag = await _log_call(tag, "waifu", _fetch_waifu_photo, tag)
+            url, actual_tag = await _log_call(tag, "waifu", _fetch_waifu_photo, tag, True)
             return (url, "photo", tag)
         except Exception:
             logger.error("[%s] waifu FAILED", tag)
             _push_chain("waifu.im", "исключение (см. лог выше)")
+            logger.error("[%s] FALLBACK CASCADE: %s", tag, _dump_chain())
+            return (config.FALLBACK_IMAGE_URL, "photo", "error")
+
+    # ── SFW (Waifu.im, IsNsfw=False) ──────────────────
+    if tag is not None and config.is_sfw_tag(tag):
+        try:
+            url, actual_tag = await _log_call(tag, "sfw", _fetch_waifu_photo, tag, False)
+            return (url, "photo", tag)
+        except Exception:
+            logger.error("[%s] sfw FAILED", tag)
+            _push_chain("sfw", "исключение (см. лог выше)")
             logger.error("[%s] FALLBACK CASCADE: %s", tag, _dump_chain())
             return (config.FALLBACK_IMAGE_URL, "photo", "error")
 
@@ -322,19 +333,23 @@ async def _replenish_pool_item(tag: str) -> None:
 
 async def _fetch_waifu_photo(
     tag: str | None = None,
+    is_nsfw: bool = True,
 ) -> tuple[str, str | None]:
     """
-    Запрашивает NSFW-изображение у Waifu.im API.
+    Запрашивает изображение у Waifu.im API.
+
+    * ``is_nsfw=True`` — NSFW-контент (по умолчанию).
+    * ``is_nsfw=False`` — SFW-контент (без 18+).
 
     До 2 попыток при дубликате URL.
-    Логи: ``[Waifu] <response.status> <items_count>``
+    Логи: ``[waifu] HTTP <status> <items_count>``
     """
-    params: dict[str, str] = {"IsNsfw": "True"}
+    params: dict[str, str] = {"IsNsfw": "True" if is_nsfw else "False"}
     if tag:
         params["IncludedTags"] = tag
 
     timeout = aiohttp.ClientTimeout(total=config.API_TIMEOUT_SECONDS)
-    cache_key = tag or "random"
+    cache_key = tag or ("random_sfw" if not is_nsfw else "random")
 
     for attempt in range(1, 3):
         try:
