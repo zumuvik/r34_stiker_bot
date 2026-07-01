@@ -459,6 +459,10 @@ async def handle_verify_callback(callback: CallbackQuery) -> None:
             except Exception:
                 logger.exception("[u:%s] verify: fallback also failed", creator_id)
 
+    # Ставим кд после верификации, чтобы первое нажатие «Давай ещё!»
+    # не было мгновенным.
+    _cooldowns[creator_id] = time.time()
+
 
 # ─────────────────── Callback: Давай ещё! ───────────────────
 
